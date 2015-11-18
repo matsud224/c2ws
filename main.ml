@@ -31,11 +31,11 @@ type asm=
 
 (*整数をWhitespaceの表現に変換*)
 let int_enc n =
-	let rec int_enc_sub n l=
-		if n<2 then ((if n < 0 then "t" else "s" (*符号ビット*)) :: (if n = 0 then "s" else "t") :: l)
-		else int_enc_sub (n/2) ((if n mod 2 = 0 then "s" else "t") :: l)
+	let rec int_enc_sub n l sign=
+		if n<2 then ((if sign = 0 then "s" else "t" (*符号ビット*)) :: (if n = 0 then "s" else "t") :: l)
+		else int_enc_sub (n/2) ((if n mod 2 = 0 then "s" else "t") :: l) sign
 	in
-		String.concat "" (int_enc_sub n ["l"])
+		String.concat "" (int_enc_sub (abs n) ["l"] (if n<0 then 1 else 0))
 
 
 let rec assemble oc asm_list =
@@ -76,4 +76,4 @@ let rec assemble oc asm_list =
 
 let ()=
 	let p=Myparser.prog Mylexer.token (Lexing.from_channel stdin) in
-		(assemble stdout [PUSH(3);PUSH(5);ADD;OUTINT;END])
+		(assemble stdout [PUSH(0);PUSH(-7);ADD;OUTINT;END])
