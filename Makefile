@@ -11,5 +11,8 @@ myparser.ml:	myparser.mly
 mylexer.ml:	mylexer.mll
 	$(OCAMLLEX) mylexer.mll
 
+top:	syntax.ml myparser.mli myparser.ml mylexer.ml
+	ocamlmktop syntax.ml myparser.mli myparser.ml mylexer.ml -o myc.top
+
 clean:
 	rm -f c2ws
