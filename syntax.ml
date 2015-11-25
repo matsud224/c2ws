@@ -3,7 +3,8 @@ type int_const = int
 type char_const = char
 type string_const = string
 
-type typename = IntType | CharType | VoidType | Array of typename
+type typename = IntType | CharType | VoidType | Array of typename 
+				| Func of typename * typename list
 
 type parm= Parameter of typename * identifier
 type vardecl_child = VarDeclChild of identifier * int_const option
