@@ -32,39 +32,39 @@ type asm=
 (*整数をWhitespaceの表現に変換*)
 let int_enc n =
 	let rec int_enc_sub n l=
-		if n<2 then ((if n = 0 then "s" else "t") :: l)
-		else int_enc_sub (n/2) ((if n mod 2 = 0 then "s" else "t") :: l)
+		if n<2 then ((if n = 0 then " " else "\t") :: l)
+		else int_enc_sub (n/2) ((if n mod 2 = 0 then " " else "\t") :: l)
 	in
-		String.concat "" ((if n >= 0 then "s" else "t" (*符号ビット*)) :: (int_enc_sub (abs n) ["l"] ))
+		String.concat "" ((if n >= 0 then " " else "\t" (*符号ビット*)) :: (int_enc_sub (abs n) ["\n"] ))
 
 
 let rec assemble oc asm_list =
 	let assemble_one asm=
 		match asm with
-		| PUSH n -> fprintf oc "ss%s" (int_enc n)
-		| DUP -> fprintf oc "sls"
-		| COPY n -> fprintf oc "sts%s" (int_enc n)
-		| SWAP -> fprintf oc "slt"
-		| DISCARD -> fprintf oc "sll"
-		| SLIDE n -> fprintf oc "stl%s" (int_enc n)
-		| ADD -> fprintf oc "tsss"
-		| SUB -> fprintf oc "tsst"
-		| MUL -> fprintf oc "tssl"
-		| DIV -> fprintf oc "tsts"
-		| MOD -> fprintf oc "tstt"
-		| STORE -> fprintf oc "tts"
-		| RETRIEVE -> fprintf oc "ttt"
-		| LABEL l -> fprintf oc "lss%s" (int_enc l)
-		| CALL l -> fprintf oc "lst%s" (int_enc l)
-		| JUMP l -> fprintf oc "lsl%s" (int_enc l)
-		| JZ l -> fprintf oc "lts%s" (int_enc l)
-		| JN l -> fprintf oc "ltt%s" (int_enc l)
-		| RETURN -> fprintf oc "ltl"
-		| END -> fprintf oc "lll"
-		| OUTCHAR -> fprintf oc "tlss"
-		| OUTINT -> fprintf oc "tlst"
-		| INCHAR -> fprintf oc "tlts"
-		| ININT -> fprintf oc "tltt" ;
+		| PUSH n -> fprintf oc "  %s" (int_enc n)
+		| DUP -> fprintf oc " \n "
+		| COPY n -> fprintf oc " \t %s" (int_enc n)
+		| SWAP -> fprintf oc " \n\t"
+		| DISCARD -> fprintf oc " \n\n"
+		| SLIDE n -> fprintf oc " \t\n%s" (int_enc n)
+		| ADD -> fprintf oc "\t   "
+		| SUB -> fprintf oc "\t  \t"
+		| MUL -> fprintf oc "\t  \n"
+		| DIV -> fprintf oc "\t \t "
+		| MOD -> fprintf oc "\t \t\t"
+		| STORE -> fprintf oc "\t\t "
+		| RETRIEVE -> fprintf oc "\t\t\t"
+		| LABEL l -> fprintf oc "\n  %s" (int_enc l)
+		| CALL l -> fprintf oc "\n \t%s" (int_enc l)
+		| JUMP l -> fprintf oc "\n \n%s" (int_enc l)
+		| JZ l -> fprintf oc "\n\t %s" (int_enc l)
+		| JN l -> fprintf oc "\n\t\t%s" (int_enc l)
+		| RETURN -> fprintf oc "\n\t\n"
+		| END -> fprintf oc "\n\n\n"
+		| OUTCHAR -> fprintf oc "\t\n  "
+		| OUTINT -> fprintf oc "\t\n \t"
+		| INCHAR -> fprintf oc "\t\n\t "
+		| ININT -> fprintf oc "\t\n\t\t" ;
 	in
 		match asm_list with
 		| [] -> ()
@@ -111,12 +111,13 @@ let rec print_asm oc asm_list =
 		)
 	
 
-type varinfo= StaticVar of typename * int (*アドレス*) | LocalVar of typename * int (*オフセット*) | ToplevelFunction of typename * int (*ラベル番号*)
+type varinfo= StaticVar of typename * int (*アドレス*) | LocalVar of typename * int (*オフセット*) * int(*次の変数の開始位置*) | ToplevelFunction of typename * int (*ラベル番号*)
 
 exception Defined_before
 exception Type_error
 exception Undefined_variable
 exception Undefined_function
+exception Notfound_main
 
 let _label=ref 0
 let get_label ()=
@@ -144,7 +145,7 @@ let rec find_flame id fl= match fl with
 let last_localaddr env=
 	List.fold_left  (
 			fun acc ele -> match ele with
-			| (_,LocalVar(_,a)) -> max acc a
+			| (_,LocalVar(_,a,n)) -> max acc n
 			| _ -> acc
 	) 0 (List.concat (List.tl (List.rev env)))
 
@@ -159,7 +160,7 @@ let addlocalvar id t len env=
 	let x=List.hd env in
 		match (find_flame id x) with
 		| None -> let last_addr=last_localaddr env in
-			((id,LocalVar(t,last_addr+(sizeof t len))) :: x) :: env
+			((id,LocalVar(t,last_addr,last_addr+(sizeof t len))) :: x) :: env
 		| Some(_)  -> raise Defined_before
 
 let addtoplevelfun id t env=
@@ -212,8 +213,8 @@ let rec compile_exp x env=
 	| LogicalAnd(exp1,exp2) -> 
 	| LogicalOr(exp1,exp2) ->*) 
 	| VarRef(id) -> (match (find_env id env) with
-					| Some(StaticVar(t,a)) -> ([PUSH(a); RETRIEVE], t)
-					| Some(LocalVar(t,a)) -> (retrieve_sprel a, t)
+					| Some(StaticVar(t,a)) -> ([PUSH(-a); RETRIEVE], t)
+					| Some(LocalVar(t,a,_)) -> (retrieve_sprel (-a), t)
 					| _ -> raise Undefined_variable)
 	| Call(id,args) ->  (match find_flame id (List.hd (List.rev env)) with
 							| Some(ToplevelFunction(Func(rett,params),label)) -> let args=List.map (fun exp -> compile_exp exp env) args in
@@ -227,40 +228,61 @@ let rec compile_exp x env=
 																	| [] -> asm
 																	| (a,s) :: rest -> argpush_asmgen rest (offset+s) (asm @ a @ (store_sprel offset))
 									in
-										((sp_add (-(sizeof rett 1))) @ (argpush_asmgen asts 0 []) @ [CALL(label)] @ (sp_add (sizeof rett 1)) , rett)
+										((argpush_asmgen (List.rev asts) ((sizeof rett 1)+1) []) @ (sp_add (sizeof rett 1)) @ [CALL(label)] @ (retrieve_sprel 0) @ (sp_add (-(sizeof rett 1))) , rett)
 							| _ -> raise Undefined_function)
-	(*| ArrayRef(id,index) -> *)
+	| ArrayRef(id,index) -> (let (idx_a,IntType)=compile_exp index env in
+							match (find_env id env) with
+							| Some(StaticVar(Array(t),a)) -> ([PUSH(-a);PUSH(sizeof t 1)] @ idx_a @ [MUL;ADD; RETRIEVE], t)
+							| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a)] @ idx_a @ [MUL;ADD;RETRIEVE], t)
+							| _ -> raise Undefined_variable)
 	| IntConst(const) -> ([PUSH(const)], IntType)
 	| CharConst(const) -> ([PUSH(int_of_char const)],CharType)
 	(*| StringConst(const) ->*) 
 
 let compile_assignment x env=
 	match x with
-	| VarAssign(id,exp) -> let (exp_a,exp_t)=compile_exp exp env in
+	| VarAssign(id,exp) -> (let (exp_a,exp_t)=compile_exp exp env in
 							match (find_env id env) with
-							| Some(StaticVar(t,a)) -> if t<>exp_t then raise Type_error else exp_a @ [PUSH(a); STORE]
-							| Some(LocalVar(t,a)) -> if t<>exp_t then raise Type_error else exp_a @ (store_sprel a)
-							| _ -> raise Undefined_variable
-	(*| ArrayAssign(id,index,exp) ->*) 
+							| Some(StaticVar(t,a)) -> if t<>exp_t then raise Type_error else exp_a @ [PUSH(-a); STORE]
+							| Some(LocalVar(t,a,_)) -> if t<>exp_t then raise Type_error else exp_a @ (store_sprel (-a))
+							| _ -> raise Undefined_variable)
+	| ArrayAssign(id,index,exp) -> (let (exp_a,exp_t)=compile_exp exp env and (idx_a,IntType)=compile_exp index env in
+							match (find_env id env) with
+							| Some(StaticVar(Array(t),a)) -> if t<>exp_t then raise Type_error else [PUSH(-a);PUSH(sizeof t 1)] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
+							| Some(LocalVar(Array(t),a,_)) -> if t<>exp_t then raise Type_error else [PUSH(0);RETRIEVE;PUSH(-a)] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
+							| _ -> raise Undefined_variable)
 
-let rec compile_stat x env returntype=
+let rec compile_stat x env returntype returnlabel retvaladdr(*SPからの相対位置*)=
 	match x with
-	| IfStat(cond,cons,alt) -> let (cond_a,cond_t)=compile_exp cond env and cons_a=compile_stat cons env returntype and alt_a=compile_stat alt env returntype in
+	| IfStat(cond,cons,alt) -> let (cond_a,cond_t)=compile_exp cond env and cons_a=compile_stat cons env returntype returnlabel retvaladdr
+								and alt_a=compile_stat alt env returntype returnlabel retvaladdr in
 								if cond_t<>IntType then raise Type_error
 								else let elselabel=get_label () and endiflabel=get_label () in 
 										cond_a @ [JZ(elselabel)] @ cons_a @ [JUMP(endiflabel)] @ [LABEL(elselabel)] @ alt_a @ [LABEL(endiflabel)]
-	| WhileStat(cond, stat) -> let (cond_a,cond_t)=compile_exp cond  env and stat_a=compile_stat stat  env returntype in
+	| WhileStat(cond, stat) -> let (cond_a,cond_t)=compile_exp cond  env and stat_a=compile_stat stat  env returntype returnlabel retvaladdr in
 								if cond_t<>IntType then raise Type_error
 								else let beginlabel=get_label () and endlabel=get_label () in 
 										[LABEL(beginlabel)] @ cond_a @ [JZ(endlabel)] @ stat_a @ [JUMP(beginlabel)] @ [LABEL(endlabel)]
-	(*| ForStat(init, cond, continue, stat) ->*) 
+	| ForStat(init, cond, continue, stat) -> let initasm=match init with
+														| None -> []
+														| Some(assg) -> compile_assignment assg env
+											and condasm=match cond with
+														| None -> []
+														| Some(exp) -> let (a,t)=compile_exp exp env in if t <> IntType then raise Type_error else a
+											and continueasm=match continue with
+															| None -> []
+															| Some(assg) -> compile_assignment assg env
+											and statasm=compile_stat stat env returntype returnlabel retvaladdr
+											and (contlabel,endlabel)=(get_label (),get_label ()) in
+												initasm @ [LABEL(contlabel)] @ condasm @ [JZ(endlabel)] @ continueasm @ statasm @ [JUMP(contlabel);LABEL(endlabel)] 
 	| ReturnStat(Some(exp)) -> let (a1,t1)=compile_exp exp env in
 							if t1!=returntype then raise Type_error
-							else a1 @ [RETURN]
-	| ReturnStat(None) -> if returntype <> VoidType then raise Type_error else [RETURN]
+							else a1 @ (store_sprel retvaladdr) @ [JUMP(returnlabel)]
+	| ReturnStat(None) -> if returntype <> VoidType then raise Type_error else [JUMP(returnlabel)]
 	| AssignStat(assg) -> compile_assignment assg env
+	| CallStat("puti",[arg1]) -> let (arg_a,arg_t)=compile_exp arg1 env in if arg_t<>IntType then raise Type_error else arg_a @ [OUTINT]
 	| CallStat(id, exps) -> let (a,t)=compile_exp (Call(id,exps)) env in a
- 	| Block(stats) -> List.concat (List.map (fun s -> compile_stat s env returntype) stats)
+ 	| Block(stats) -> List.concat (List.map (fun s -> compile_stat s env returntype returnlabel retvaladdr) stats)
 	| PassStat -> []
 
 
@@ -281,27 +303,30 @@ let rec compile_toplevel x env=
 			let paramdef_env=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> addlocalvar id ty 1 acc) ([] :: defined_env) params in
 			let newfun_env=List.fold_left (fun acc decl -> match decl with VarDecl(t,children) -> 
 												(List.fold_left (fun acc child -> match child with
-																				| VarDeclChild(id,Some(size)) -> addlocalvar id t size acc
+																				| VarDeclChild(id,Some(size)) -> addlocalvar id (Array(t)) size acc
 																				| VarDeclChild(id,None) -> addlocalvar id t 1 acc
 												) acc children)
 											) paramdef_env vardecl in			
-			let stext_size=last_localaddr newfun_env in
-			let prologue=(sp_add stext_size) and epilogue=(sp_add (-stext_size)) @ [RETURN]
+			let stext_size=last_localaddr newfun_env
+			and ret_label=get_label () in
+			let prologue=(sp_add stext_size) and epilogue= [LABEL(ret_label)] @ (sp_add (-stext_size)) @ [RETURN]
 			and this_label= match (find_env id defined_env) with
 							| Some (ToplevelFunction(ty,lb)) -> lb
 			in
-				(defined_env, [LABEL(this_label)] @ prologue @ (List.concat (List.map (fun s -> compile_stat s  newfun_env t) body)) @ epilogue)
+				(defined_env, [LABEL(this_label)] @ prologue @ (List.concat (List.map (fun s -> compile_stat s  newfun_env t ret_label ((-stext_size))) body)) @ epilogue)
 
 
 let rec compile ast env asm=
 	match ast with
-	| [] -> asm
+	| [] -> (match (find_flame "main" (List.hd (List.rev env))) with
+						| None ->  raise Notfound_main
+						| Some(ToplevelFunction(t,lb)) -> [PUSH(0);PUSH(get_staticvar 1(*静的変数領域の次からスタック領域*));STORE;CALL(lb);END] @ asm )
 	| x :: xs -> match (compile_toplevel x env) with
 				| (newenv,newasm) -> compile xs newenv (asm @ newasm)
 
 
 let ()=
 	let ast=Myparser.prog Mylexer.token (Lexing.from_channel stdin) in
-		print_asm stdout (compile ast [[]] [])
+		assemble stdout (compile ast [[]] [])
 
 
