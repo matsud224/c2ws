@@ -4,7 +4,6 @@ open Syntax
 
 %token <string> Id
 %token <int> IntConst
-%token <char> CharConst
 %token <string> StringConst
 %token ASSIGNEQ    		/* = */
 %token EQUAL	  		/* == */
@@ -113,9 +112,7 @@ var_decl_additional:
 	{ $2 :: $3 }
 
 typename:
-	CHAR
-	{ CharType }
-|	INT
+	INT
 	{ IntType }
 
 parm_list:
@@ -124,7 +121,7 @@ parm_list:
 |	typename Id                       parm_list_additional
 	{ Parameter($1,$2) :: $3 }
 |	typename Id   LBRACKET RBRACKET   parm_list_additional
-	{ Parameter(Array($1),$2) :: $5 }
+	{ Parameter(Pointer($1),$2) :: $5 }
 
 parm_list_additional:
 
@@ -181,6 +178,10 @@ stmt:
 	{ CallStat($1,$3) }
 |	LBRACE stmt_list RBRACE
 	{ Block($2) }
+|	CONTINUE
+	{ ContinueStat }
+|	BREAK
+	{ BreakStat }
 |	SEMICOLON
 	{ PassStat }
 
@@ -243,8 +244,6 @@ expr:
 	{ $2 }
 |	IntConst
 	{ IntConst($1) }
-|	CharConst
-	{ CharConst($1) }
 |	StringConst
 	{ StringConst($1) }
 

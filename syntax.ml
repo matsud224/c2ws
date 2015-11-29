@@ -1,9 +1,8 @@
 type identifier = string
 type int_const = int
-type char_const = char
 type string_const = string
 
-type typename = IntType | CharType | VoidType | Array of typename 
+type typename = IntType | VoidType | Array of typename | Pointer of typename
 				| Func of typename * typename list
 
 type parm= Parameter of typename * identifier
@@ -33,7 +32,6 @@ and exp=
 |	Call of identifier * exp list
 |	ArrayRef of identifier * exp
 |	IntConst of int_const
-|	CharConst of char_const
 |	StringConst of string_const
 
 and stat=
@@ -44,6 +42,8 @@ and stat=
 |	AssignStat of assg
 |	CallStat of identifier * exp list
 |	Block of stat list
+|	ContinueStat
+|	BreakStat
 |	PassStat
 
 and assg=

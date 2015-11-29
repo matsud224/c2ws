@@ -118,13 +118,15 @@ exception Type_error
 exception Undefined_variable
 exception Undefined_function
 exception Notfound_main
+exception ContinueStat_not_within_loop
+exception BreakStat_not_within_loop
 
 let _label=ref 0
 let get_label ()=
 	_label := !_label + 1;
 	!_label
 
-let _stvar=ref 1
+let _stvar=ref 2 (*0はSPに、1はInput時の一時格納先として使われている*)
 let get_staticvar size=
 	let temp = !_stvar in
 		_stvar := !_stvar+size; temp
@@ -132,9 +134,9 @@ let get_staticvar size=
 let rec sizeof t len=
 	match t with
 	| IntType -> 1
-	| CharType -> 1
 	| VoidType -> 0
-	| Array s -> len * (sizeof s 1)
+	| Array(s) -> len * (sizeof s 1)
+	| Pointer(s) -> 1
 	| Func(_,_) -> 0
 
 let rec find_flame id fl= match fl with
@@ -185,37 +187,42 @@ let store_sprel offset= get_sp @ [PUSH(offset);ADD;SWAP;STORE] (*スタックト
 
 let rec compile_exp x env=
 	match x with
-	| Minus(exp) -> let (a1,t1)=compile_exp exp env in
-							if t1 <> IntType then raise Type_error
-							else (a1 @ [PUSH(-1);MUL],IntType)
-	(*| Not(exp) ->*) 
-	| Add(exp1,exp2) -> let (a1,t1)=compile_exp exp1 env and (a2,t2)=compile_exp exp2 env  in
-							if t1 <> IntType || t2 <> IntType then raise Type_error
-							else (a1 @ a2 @ [ADD],IntType)
-	| Sub(exp1,exp2) -> let (a1,t1)=compile_exp exp1 env  and (a2,t2)=compile_exp exp2 env  in
-							if t1 <> IntType || t2 <> IntType then raise Type_error
-							else (a1 @ a2 @ [SUB],IntType)
-	| Mul(exp1,exp2) -> let (a1,t1)=compile_exp exp1 env  and (a2,t2)=compile_exp exp2 env  in
-							if t1 <> IntType || t2 <> IntType then raise Type_error
-							else (a1 @ a2 @ [MUL],IntType)
-	| Div(exp1,exp2) -> let (a1,t1)=compile_exp exp1 env  and (a2,t2)=compile_exp exp2 env  in
-							if t1 <> IntType || t2 <> IntType then raise Type_error
-							else (a1 @ a2 @ [DIV],IntType)
-	| Mod(exp1,exp2) -> let (a1,t1)=compile_exp exp1 env  and (a2,t2)=compile_exp exp2 env  in
-							if t1 <> IntType || t2 <> IntType then raise Type_error
-							else (a1 @ a2 @ [MOD] , IntType)
-	(*| Eq(exp1,exp2) -> 
-	| NotEq(exp1,exp2) -> 
-	| Lesser(exp1,exp2) -> 
-	| Greater(exp1,exp2) -> 
-	| LesserEq(exp1,exp2) -> 
-	| GreaterEq(exp1,exp2) -> 
-	| LogicalAnd(exp1,exp2) -> 
-	| LogicalOr(exp1,exp2) ->*) 
+	| Minus(exp) -> let (a1,IntType)=compile_exp exp env in (a1 @ [PUSH(-1);MUL],IntType)
+	| Not(exp) -> let (a1,IntType)=compile_exp exp env and (zlabel,margelabel)=(get_label (),get_label ()) in
+					(a1 @ [JZ(zlabel);PUSH(0);JUMP(margelabel);LABEL(zlabel);PUSH(1);LABEL(margelabel)], IntType)
+	| Add(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env and (a2,IntType)=compile_exp exp2 env  in
+							(a1 @ a2 @ [ADD],IntType)
+	| Sub(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env  and (a2,IntType)=compile_exp exp2 env  in
+							(a1 @ a2 @ [SUB],IntType)
+	| Mul(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env  and (a2,IntType)=compile_exp exp2 env  in
+							(a1 @ a2 @ [MUL],IntType)
+	| Div(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env  and (a2,IntType)=compile_exp exp2 env  in
+							(a1 @ a2 @ [DIV],IntType)
+	| Mod(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env  and (a2,IntType)=compile_exp exp2 env  in
+							(a1 @ a2 @ [MOD] , IntType)
+	| Eq(exp1,exp2) -> let (a1,t1)=compile_exp exp1 env and (a2,t2)=compile_exp exp2 env and (zlabel,margelabel)=(get_label (),get_label ()) in
+						if t1<>t2 then raise Type_error
+						else (a1 @ a2 @ [SUB;JZ(zlabel);PUSH(0);JUMP(margelabel);LABEL(zlabel);PUSH(1);LABEL(margelabel)], IntType)
+	| NotEq(exp1,exp2) -> let (a1,t1)=compile_exp exp1 env and (a2,t2)=compile_exp exp2 env and (zlabel,margelabel)=(get_label (),get_label ()) in
+							if t1<>t2 then raise Type_error
+							else (a1 @ a2 @ [SUB;JZ(zlabel);PUSH(1);JUMP(margelabel);LABEL(zlabel);PUSH(0);LABEL(margelabel)], IntType)
+	| Lesser(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env and (a2,IntType)=compile_exp exp2 env and (nlabel,margelabel)=(get_label (),get_label ()) in
+							(a1 @ a2 @ [SUB;JN(nlabel);PUSH(0);JUMP(margelabel);LABEL(nlabel);PUSH(1);LABEL(margelabel)], IntType)
+	| Greater(exp1,exp2) -> compile_exp (Lesser (exp2,exp1)) env
+	| LesserEq(exp1,exp2) -> compile_exp (Not (Lesser (exp2,exp1))) env
+	| GreaterEq(exp1,exp2) -> compile_exp (Not (Lesser (exp1,exp2))) env
+	| LogicalAnd(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env and (a2,IntType)=compile_exp exp2 env and (zlabel,margelabel)=(get_label (),get_label ()) in
+									(a1 @ a2 @ [MUL;JZ(zlabel);PUSH(1);JUMP(margelabel);LABEL(zlabel);PUSH(0);LABEL(margelabel)], IntType)
+	| LogicalOr(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 env and (a2,IntType)=compile_exp exp2 env and (zlabel,margelabel)=(get_label (),get_label ()) in
+								(a1 @ a2 @ [ADD;JZ(zlabel);PUSH(1);JUMP(margelabel);LABEL(zlabel);PUSH(0);LABEL(margelabel)], IntType)
 	| VarRef(id) -> (match (find_env id env) with
-					| Some(StaticVar(t,a)) -> ([PUSH(-a); RETRIEVE], t)
+					| Some(StaticVar(Array(t),a)) -> ([PUSH(a)], Pointer(t))
+					| Some(StaticVar(t,a)) -> ([PUSH(a); RETRIEVE], t)
+					| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a);ADD], Pointer(t))
 					| Some(LocalVar(t,a,_)) -> (retrieve_sprel (-a), t)
 					| _ -> raise Undefined_variable)
+	| Call("geti",[]) -> ([PUSH(1);ININT;PUSH(1);RETRIEVE], IntType) (*Input系命令は、スタックに格納先のヒープのアドレスをおいておかないといけない*)
+	| Call("getc",[]) -> ([PUSH(1);INCHAR;PUSH(1);RETRIEVE], IntType)
 	| Call(id,args) ->  (match find_flame id (List.hd (List.rev env)) with
 							| Some(ToplevelFunction(Func(rett,params),label)) -> let args=List.map (fun exp -> compile_exp exp env) args in
 									let asts=List.map2 (
@@ -228,15 +235,17 @@ let rec compile_exp x env=
 																	| [] -> asm
 																	| (a,s) :: rest -> argpush_asmgen rest (offset+s) (asm @ a @ (store_sprel offset))
 									in
-										((argpush_asmgen (List.rev asts) ((sizeof rett 1)+1) []) @ (sp_add (sizeof rett 1)) @ [CALL(label)] @ (retrieve_sprel 0) @ (sp_add (-(sizeof rett 1))) , rett)
+										((argpush_asmgen (List.rev asts) ((sizeof rett 1)+1) []) @ (sp_add (sizeof rett 1))
+											@ [CALL(label)] @ (retrieve_sprel 0) @ (sp_add (-(sizeof rett 1))) , rett)
 							| _ -> raise Undefined_function)
 	| ArrayRef(id,index) -> (let (idx_a,IntType)=compile_exp index env in
 							match (find_env id env) with
-							| Some(StaticVar(Array(t),a)) -> ([PUSH(-a);PUSH(sizeof t 1)] @ idx_a @ [MUL;ADD; RETRIEVE], t)
-							| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a)] @ idx_a @ [MUL;ADD;RETRIEVE], t)
+							| Some(StaticVar(Pointer(t),a)) -> ([PUSH(a);RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD; RETRIEVE], t)
+							| Some(LocalVar(Pointer(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a);ADD;RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD;RETRIEVE], t)
+							| Some(StaticVar(Array(t),a)) -> ([PUSH(a);PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD; RETRIEVE], t)
+							| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);PUSH(-a);ADD;RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD;RETRIEVE], t)
 							| _ -> raise Undefined_variable)
 	| IntConst(const) -> ([PUSH(const)], IntType)
-	| CharConst(const) -> ([PUSH(int_of_char const)],CharType)
 	(*| StringConst(const) ->*) 
 
 let compile_assignment x env=
@@ -244,45 +253,51 @@ let compile_assignment x env=
 	| VarAssign(id,exp) -> (let (exp_a,exp_t)=compile_exp exp env in
 							match (find_env id env) with
 							| Some(StaticVar(t,a)) -> if t<>exp_t then raise Type_error else exp_a @ [PUSH(-a); STORE]
+							| Some(LocalVar(Array(t),a,_)) -> raise Type_error
 							| Some(LocalVar(t,a,_)) -> if t<>exp_t then raise Type_error else exp_a @ (store_sprel (-a))
 							| _ -> raise Undefined_variable)
 	| ArrayAssign(id,index,exp) -> (let (exp_a,exp_t)=compile_exp exp env and (idx_a,IntType)=compile_exp index env in
 							match (find_env id env) with
-							| Some(StaticVar(Array(t),a)) -> if t<>exp_t then raise Type_error else [PUSH(-a);PUSH(sizeof t 1)] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
-							| Some(LocalVar(Array(t),a,_)) -> if t<>exp_t then raise Type_error else [PUSH(0);RETRIEVE;PUSH(-a)] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
+							| Some(StaticVar(Pointer(t),a)) -> if t<>exp_t then raise Type_error else [PUSH(a);RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
+							| Some(LocalVar(Pointer(t),a,_)) -> if t<>exp_t then raise Type_error
+															else [PUSH(0);RETRIEVE;PUSH(-a);ADD;RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
+							| Some(StaticVar(Array(t),a)) -> if t<>exp_t then raise Type_error else [PUSH(a);PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
+							| Some(LocalVar(Array(t),a,_)) -> if t<>exp_t then raise Type_error
+															else [PUSH(0);RETRIEVE;PUSH(-a);ADD;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD] @ exp_a @ [STORE]
 							| _ -> raise Undefined_variable)
 
-let rec compile_stat x env returntype returnlabel retvaladdr(*SPからの相対位置*)=
+let rec compile_stat x env returntype returnlabel retvaladdr(*SPからの相対位置*) breaklabel continuelabel (*break,continuelabel共にoption*)=
 	match x with
-	| IfStat(cond,cons,alt) -> let (cond_a,cond_t)=compile_exp cond env and cons_a=compile_stat cons env returntype returnlabel retvaladdr
-								and alt_a=compile_stat alt env returntype returnlabel retvaladdr in
-								if cond_t<>IntType then raise Type_error
-								else let elselabel=get_label () and endiflabel=get_label () in 
+	| IfStat(cond,cons,alt) -> let (cond_a,IntType)=compile_exp cond env and cons_a=compile_stat cons env returntype returnlabel retvaladdr breaklabel continuelabel
+								and alt_a=compile_stat alt env returntype returnlabel retvaladdr breaklabel continuelabel in
+								let elselabel=get_label () and endiflabel=get_label () in 
 										cond_a @ [JZ(elselabel)] @ cons_a @ [JUMP(endiflabel)] @ [LABEL(elselabel)] @ alt_a @ [LABEL(endiflabel)]
-	| WhileStat(cond, stat) -> let (cond_a,cond_t)=compile_exp cond  env and stat_a=compile_stat stat  env returntype returnlabel retvaladdr in
-								if cond_t<>IntType then raise Type_error
-								else let beginlabel=get_label () and endlabel=get_label () in 
+	| WhileStat(cond, stat) -> let beginlabel=get_label () and endlabel=get_label () in
+								let (cond_a,IntType)=compile_exp cond  env and stat_a=compile_stat stat  env returntype returnlabel retvaladdr (Some(endlabel)) continuelabel in
 										[LABEL(beginlabel)] @ cond_a @ [JZ(endlabel)] @ stat_a @ [JUMP(beginlabel)] @ [LABEL(endlabel)]
-	| ForStat(init, cond, continue, stat) -> let initasm=match init with
+	| ForStat(init, cond, continue, stat) -> let (nextlabel,contlabel,endlabel)=(get_label (),get_label (),get_label ()) in
+											let initasm=match init with
 														| None -> []
 														| Some(assg) -> compile_assignment assg env
 											and condasm=match cond with
-														| None -> []
+														| None -> [PUSH(1)]
 														| Some(exp) -> let (a,t)=compile_exp exp env in if t <> IntType then raise Type_error else a
 											and continueasm=match continue with
 															| None -> []
 															| Some(assg) -> compile_assignment assg env
-											and statasm=compile_stat stat env returntype returnlabel retvaladdr
-											and (contlabel,endlabel)=(get_label (),get_label ()) in
-												initasm @ [LABEL(contlabel)] @ condasm @ [JZ(endlabel)] @ continueasm @ statasm @ [JUMP(contlabel);LABEL(endlabel)] 
+											and statasm=compile_stat stat env returntype returnlabel retvaladdr (Some(endlabel)) (Some(contlabel)) in
+												initasm @ [LABEL(nextlabel)] @ condasm @ [JZ(endlabel)]  @ statasm @ [LABEL(contlabel)] @ continueasm @ [JUMP(nextlabel);LABEL(endlabel)]
 	| ReturnStat(Some(exp)) -> let (a1,t1)=compile_exp exp env in
 							if t1!=returntype then raise Type_error
 							else a1 @ (store_sprel retvaladdr) @ [JUMP(returnlabel)]
 	| ReturnStat(None) -> if returntype <> VoidType then raise Type_error else [JUMP(returnlabel)]
 	| AssignStat(assg) -> compile_assignment assg env
-	| CallStat("puti",[arg1]) -> let (arg_a,arg_t)=compile_exp arg1 env in if arg_t<>IntType then raise Type_error else arg_a @ [OUTINT]
+	| CallStat("puti",[arg1]) -> let (arg_a,IntType)=compile_exp arg1 env in arg_a @ [OUTINT]
+	| CallStat("putc",[arg1]) -> let (arg_a,IntType)=compile_exp arg1 env in arg_a @ [OUTCHAR]
 	| CallStat(id, exps) -> let (a,t)=compile_exp (Call(id,exps)) env in a
- 	| Block(stats) -> List.concat (List.map (fun s -> compile_stat s env returntype returnlabel retvaladdr) stats)
+ 	| Block(stats) -> List.concat (List.map (fun s -> compile_stat s env returntype returnlabel retvaladdr breaklabel continuelabel) stats) 
+	| ContinueStat -> (match continuelabel with None -> raise ContinueStat_not_within_loop | Some(lb) ->  [JUMP(lb)])
+	| BreakStat -> (match breaklabel with None -> raise BreakStat_not_within_loop | Some(lb) -> [JUMP(lb)])
 	| PassStat -> []
 
 
@@ -296,9 +311,10 @@ let rec compile_toplevel x env=
 	| PrototypeDecl(t,id,params) ->
 		((addtoplevelfun id (Func(t, List.map (function Parameter(ty,_) -> ty) params)) env), [])
 	| FuncDef(t,id,params,vardecl,body) ->
+		let functype=(Func(t, List.map (function Parameter(ty,_) -> ty) params)) in
 		let defined_env= match (find_env id env) with
-						| Some (ToplevelFunction(ty,lb)) -> if ty != t then raise Type_error else env
-						| _ -> addtoplevelfun id (Func(t, List.map (function Parameter(ty,_) -> ty) params)) env
+						| Some (ToplevelFunction(ty,lb)) -> if ty <> functype then raise Type_error else env
+						| _ -> addtoplevelfun id functype env
 		in
 			let paramdef_env=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> addlocalvar id ty 1 acc) ([] :: defined_env) params in
 			let newfun_env=List.fold_left (fun acc decl -> match decl with VarDecl(t,children) -> 
@@ -313,7 +329,7 @@ let rec compile_toplevel x env=
 			and this_label= match (find_env id defined_env) with
 							| Some (ToplevelFunction(ty,lb)) -> lb
 			in
-				(defined_env, [LABEL(this_label)] @ prologue @ (List.concat (List.map (fun s -> compile_stat s  newfun_env t ret_label ((-stext_size))) body)) @ epilogue)
+				(defined_env, [LABEL(this_label)] @ prologue @ (List.concat (List.map (fun s -> compile_stat s  newfun_env t ret_label ((-stext_size)) None None) body)) @ epilogue)
 
 
 let rec compile ast env asm=

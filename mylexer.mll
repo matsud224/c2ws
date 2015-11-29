@@ -10,6 +10,10 @@ let escape = '\\' ['a' 'b' 'f' 'n' 'r' 't' 'v' '\\' '?' '\'' '\"' '0']
 
 
 rule token = parse
+| "//"
+	{ linecomment lexbuf }
+| "/*"
+	{ blockcomment 1 lexbuf }
 | "sizeof"
     { SIZEOF }
 | "static"
@@ -66,7 +70,7 @@ rule token = parse
 		let len=(length (Lexing.lexeme lexbuf)) - 2 in
 		let cut=sub (Lexing.lexeme lexbuf) 1 len in
 		let escapedstr=escaped cut in
-			CharConst(get escapedstr 0) 
+			IntConst(int_of_char (get escapedstr 0)) 
 	}
 | '\"' ([' ' - '~'] | escape)* '\"'
     { 
@@ -162,3 +166,17 @@ rule token = parse
            (Lexing.lexeme lexbuf)
            (Lexing.lexeme_start lexbuf)
            (Lexing.lexeme_end lexbuf)) }
+
+and blockcomment depth = parse
+| "/*"
+	{ blockcomment (depth+1) lexbuf }
+| "*/"
+	{ if (depth-1)=0 then token lexbuf (*ふつうのモードへ戻る*) else blockcomment (depth-1) lexbuf }
+| _ 
+	{ blockcomment depth lexbuf }
+
+and linecomment = parse
+| '\n' | eof
+	{ token lexbuf }
+| _
+	{ linecomment lexbuf }
