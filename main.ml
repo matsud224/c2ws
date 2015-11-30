@@ -162,7 +162,7 @@ let addlocalvar id t len env=
 	let x=List.hd env in
 		match (find_flame id x) with
 		| None -> let last_addr=last_localaddr env in
-			((id,LocalVar(t,last_addr,last_addr+(sizeof t len))) :: x) :: env
+			(fprintf stderr "%d~%d\n" last_addr (last_addr+(sizeof t len)));((id,LocalVar(t,last_addr,last_addr+(sizeof t len))) :: x) :: env
 		| Some(_)  -> raise Defined_before
 
 let addtoplevelfun id t env=
@@ -233,9 +233,9 @@ let rec compile_exp x env=
 									in
 									let rec argpush_asmgen args offset asm = match args with
 																	| [] -> asm
-																	| (a,s) :: rest -> argpush_asmgen rest (offset+s) (asm @ a @ (store_sprel offset))
+																	| (a,s) :: rest -> (fprintf stderr "offset:%d\n" offset);argpush_asmgen rest (offset+s) (asm @ a @ (store_sprel offset))
 									in
-										((argpush_asmgen (List.rev asts) ((sizeof rett 1)+1) []) @ (sp_add (sizeof rett 1))
+										((argpush_asmgen (asts) ((sizeof rett 1)+1) []) @ (sp_add (sizeof rett 1))
 											@ [CALL(label)] @ (retrieve_sprel 0) @ (sp_add (-(sizeof rett 1))) , rett)
 							| _ -> raise Undefined_function)
 	| ArrayRef(id,index) -> (let (idx_a,IntType)=compile_exp index env in
@@ -293,6 +293,7 @@ let rec compile_stat x env returntype returnlabel retvaladdr(*SPからの相対�
 	| ReturnStat(None) -> if returntype <> VoidType then raise Type_error else [JUMP(returnlabel)]
 	| AssignStat(assg) -> compile_assignment assg env
 	| CallStat("puti",[arg1]) -> let (arg_a,IntType)=compile_exp arg1 env in arg_a @ [OUTINT]
+	| CallStat("putp",[arg1]) -> let (arg_a,Pointer(t))=compile_exp arg1 env in arg_a @ [OUTINT]
 	| CallStat("putc",[arg1]) -> let (arg_a,IntType)=compile_exp arg1 env in arg_a @ [OUTCHAR]
 	| CallStat(id, exps) -> let (a,t)=compile_exp (Call(id,exps)) env in a
  	| Block(stats) -> List.concat (List.map (fun s -> compile_stat s env returntype returnlabel retvaladdr breaklabel continuelabel) stats) 
@@ -316,14 +317,14 @@ let rec compile_toplevel x env=
 						| Some (ToplevelFunction(ty,lb)) -> if ty <> functype then raise Type_error else env
 						| _ -> addtoplevelfun id functype env
 		in
-			let paramdef_env=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> addlocalvar id ty 1 acc) ([] :: defined_env) params in
-			let newfun_env=List.fold_left (fun acc decl -> match decl with VarDecl(t,children) -> 
+			let localdef_env=List.fold_left (fun acc decl -> match decl with VarDecl(t,children) -> 
 												(List.fold_left (fun acc child -> match child with
 																				| VarDeclChild(id,Some(size)) -> addlocalvar id (Array(t)) size acc
 																				| VarDeclChild(id,None) -> addlocalvar id t 1 acc
 												) acc children)
-											) paramdef_env vardecl in			
-			let stext_size=last_localaddr newfun_env
+											) defined_env vardecl in			
+			let newfun_env=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> addlocalvar id ty 1 acc) ([] :: localdef_env) params in
+			let stext_size=(last_localaddr newfun_env)
 			and ret_label=get_label () in
 			let prologue=(sp_add stext_size) and epilogue= [LABEL(ret_label)] @ (sp_add (-stext_size)) @ [RETURN]
 			and this_label= match (find_env id defined_env) with
