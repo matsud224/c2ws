@@ -197,19 +197,19 @@ let store_sprel offset= get_sp @ [PUSH(offset);ADD;SWAP;STORE] (*スタックト
 let rec compile_lvalue x env=
 	match x with
 	| VarRef(id) -> (match (find_env id env) with
-					| Some(StaticVar(Array(t),a)) -> ([PUSH(a)], t)
-					| Some(StaticVar(t,a)) -> ([PUSH(a)], t)
-					| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a);ADD], Pointer(t))
-					| Some(LocalVar(t,a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a);ADD], t)
+					| Some(StaticVar(Array(t),a)) -> ([PUSH(a)], Pointer(t))
+					| Some(StaticVar(t,a)) -> ([PUSH(a)], Pointer(t))
+					| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
+					| Some(LocalVar(t,_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
 					| _ -> raise Undefined_variable)
 	| ArrayRef(id,index) -> (let (idx_a,IntType)=compile_exp index env in
 							match (find_env id env) with
-							| Some(StaticVar(Pointer(t),a)) -> ([PUSH(a);RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD], t)
-							| Some(LocalVar(Pointer(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a);ADD;RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD], t)
-							| Some(StaticVar(Array(t),a)) -> ([PUSH(a);PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD], t)
-							| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);PUSH(-a);ADD;RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD], t)
+							| Some(StaticVar(Pointer(t),a)) -> ([PUSH(a);RETRIEVE;PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD], Pointer(t))
+							| Some(LocalVar(Pointer(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD;PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD], Pointer(t))
+							| Some(StaticVar(Array(t),a)) -> ([PUSH(a);PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD], Pointer(t))
+							| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD;PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD], Pointer(t))
 							| _ -> raise Undefined_variable)
-	| Indirection(exp) -> (let (exp_a,Pointer(t))=compile_exp exp env in (exp_a,t))
+	| Indirection(exp) -> (let (exp_a,Pointer(t))=compile_exp exp env in (exp_a,Pointer(t)))
 	| _ -> raise Invalid_lvalue
 
 and compile_exp x env=
@@ -244,29 +244,29 @@ and compile_exp x env=
 								and (nextlabel,falselabel,margelabel)=(get_label (),get_label (),get_label ()) in
 								(a1 @ [JZ(nextlabel)] @ [PUSH(1);JUMP(margelabel);LABEL(nextlabel)]
 								@ a2 @ [JZ(falselabel);PUSH(1);JUMP(margelabel);LABEL(falselabel);PUSH(0);LABEL(margelabel)], IntType)
-	| Assign(target,exp) -> let (target_a,target_t)=compile_lvalue target env and (exp_a,exp_t)=compile_exp exp env in
+	| Assign(target,exp) -> let (target_a,Pointer(target_t))=compile_lvalue target env and (exp_a,exp_t)=compile_exp exp env in
 							if target_t<>exp_t then raise (Type_error (target_t,exp_t)) else (exp_a @ [DUP] @ target_a @ [SWAP;STORE],exp_t)
-	| AssignAdd(target,exp) -> let (target_a,target_t)=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
+	| AssignAdd(target,exp) -> let (target_a,Pointer(target_t))=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
 							if target_t<>exp_t then raise (Type_error (target_t,exp_t)) else (texp_a @ exp_a @ [ADD] @ [DUP] @ target_a @ [SWAP;STORE],exp_t)
-	| AssignSub(target,exp) -> let (target_a,target_t)=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
+	| AssignSub(target,exp) -> let (target_a,Pointer(target_t))=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
 							if target_t<>exp_t then raise (Type_error (target_t,exp_t)) else (texp_a @ exp_a @ [SUB] @ [DUP] @ target_a @ [SWAP;STORE],exp_t)
-	| AssignMul(target,exp) -> let (target_a,target_t)=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
+	| AssignMul(target,exp) -> let (target_a,Pointer(target_t))=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
 							if target_t<>exp_t then raise (Type_error (target_t,exp_t)) else (texp_a @ exp_a @ [MUL] @ [DUP] @ target_a @ [SWAP;STORE],exp_t)
-	| AssignDiv(target,exp) -> let (target_a,target_t)=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
+	| AssignDiv(target,exp) -> let (target_a,Pointer(target_t))=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
 							if target_t<>exp_t then raise (Type_error (target_t,exp_t)) else (texp_a @ exp_a @ [DIV] @ [DUP] @ target_a @ [SWAP;STORE],exp_t)
-	| AssignMod(target,exp) -> let (target_a,target_t)=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
+	| AssignMod(target,exp) -> let (target_a,Pointer(target_t))=compile_lvalue target env and (texp_a,texp_t)=compile_exp target env and (exp_a,exp_t)=compile_exp exp env in
 							if target_t<>exp_t then raise (Type_error (target_t,exp_t)) else (texp_a @ exp_a @ [MOD] @ [DUP] @ target_a @ [SWAP;STORE],exp_t)
 	| PreIncrement(exp) -> compile_exp (AssignAdd(exp,(IntConst(1)))) env
 	| PreDecrement(exp) -> compile_exp (AssignAdd(exp,(IntConst(-1)))) env
-	| PostIncrement(exp) -> let (target_a,target_t)=compile_lvalue exp env and (texp_a,texp_t)=compile_exp exp env in
+	| PostIncrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp env and (texp_a,texp_t)=compile_exp exp env in
 								(texp_a @ [DUP;PUSH(1);ADD] @ target_a @ [SWAP;STORE], target_t)
-	| PostDecrement(exp) -> let (target_a,target_t)=compile_lvalue exp env and (texp_a,texp_t)=compile_exp exp env in
+	| PostDecrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp env and (texp_a,texp_t)=compile_exp exp env in
 								(texp_a @ [DUP;PUSH(-1);ADD] @ target_a @ [SWAP;STORE], target_t)
 	| VarRef(id) -> (match (find_env id env) with
 					| Some(StaticVar(Array(t),a)) -> ([PUSH(a)], Pointer(t))
 					| Some(StaticVar(t,a)) -> ([PUSH(a); RETRIEVE], t)
-					| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a);ADD], Pointer(t))
-					| Some(LocalVar(t,a,_)) -> (retrieve_sprel (-a), t)
+					| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
+					| Some(LocalVar(t,_,a)) -> (retrieve_sprel (-a+1), t)
 					| _ -> raise Undefined_variable)
 	| Call("geti",[]) -> ([PUSH(1);ININT;PUSH(1);RETRIEVE], IntType) (*Input系命令は、スタックに格納先のヒープのアドレスをおいておかないといけない*)
 	| Call("getc",[]) -> ([PUSH(1);INCHAR;PUSH(1);RETRIEVE], IntType)
@@ -290,13 +290,13 @@ and compile_exp x env=
 							| _ -> raise Undefined_function)
 	| ArrayRef(id,index) -> (let (idx_a,IntType)=compile_exp index env in
 							match (find_env id env) with
-							| Some(StaticVar(Pointer(t),a)) -> ([PUSH(a);RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD; RETRIEVE], t)
-							| Some(LocalVar(Pointer(t),a,_)) -> ([PUSH(0);RETRIEVE;PUSH(-a);ADD;RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD;RETRIEVE], t)
-							| Some(StaticVar(Array(t),a)) -> ([PUSH(a);PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD; RETRIEVE], t)
-							| Some(LocalVar(Array(t),a,_)) -> ([PUSH(0);PUSH(-a);ADD;RETRIEVE;PUSH(-(sizeof t 1))] @ idx_a @ [MUL;ADD;RETRIEVE], t)
+							| Some(StaticVar(Pointer(t),a)) -> ([PUSH(a);RETRIEVE;PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD; RETRIEVE], t)
+							| Some(LocalVar(Pointer(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD;PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD;RETRIEVE], t)
+							| Some(StaticVar(Array(t),a)) -> ([PUSH(a);PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD; RETRIEVE], t)
+							| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD;PUSH((sizeof t 1))] @ idx_a @ [MUL;ADD;RETRIEVE], t)
 							| _ -> raise Undefined_variable)
 	| Address(exp) -> compile_lvalue exp env
-	| Indirection(exp) -> let (exp_a,exp_t)=compile_lvalue exp env in (exp_a @ [RETRIEVE],exp_t)
+	| Indirection(exp) -> let (exp_a,Pointer(t))=compile_exp exp env in (exp_a @ [RETRIEVE],t)
 	| CommaExpr(exp1,exp2) -> let (exp1_a,_)=compile_exp exp1 env and (exp2_a,exp2_t)=compile_exp exp2 env in (exp1_a @ exp2_a, exp2_t)
 	| IntConst(const) -> ([PUSH(const)], IntType)
 	(*| StringConst(const) ->*) 
@@ -347,9 +347,9 @@ let rec compile_toplevel x env=
 										| VarDeclChild(id,None,ptrdep) -> addstaticvar id (make_ptrtype t ptrdep) 1 acc
 						 ) env children , [] )
 	| PrototypeDecl(t,id,params) ->
-		((addtoplevelfun id (Func(t, List.map (function Parameter(ty,_) -> ty) params)) env), [])
+		((addtoplevelfun id (Func(t, List.map (function Parameter(ty,_,ptrdep) -> (make_ptrtype ty ptrdep)) params)) env), [])
 	| FuncDef(t,id,params,vardecl,body) ->
-		let functype=(Func(t, List.map (function Parameter(ty,_) -> ty) params)) in
+		let functype=(Func(t, List.map (function Parameter(ty,_,ptrdep) -> (make_ptrtype ty ptrdep)) params)) in
 		let defined_env= match (find_env id env) with
 						| Some (ToplevelFunction(ty,lb)) -> if ty <> functype then raise (Type_error (t,functype)) else env
 						| _ -> addtoplevelfun id functype env
@@ -360,7 +360,7 @@ let rec compile_toplevel x env=
 																			| VarDeclChild(id,None,ptrdep) -> addlocalvar id (make_ptrtype t ptrdep) 1 acc
 												) acc children)
 											) defined_env vardecl in			
-			let newfun_env=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> addlocalvar id ty 1 acc) ([] :: localdef_env) params in
+			let newfun_env=List.fold_left (fun acc param -> match param with Parameter(ty,id,ptrdep) -> addlocalvar id (make_ptrtype ty ptrdep) 1 acc) ([] :: localdef_env) params in
 			let stext_size=(last_localaddr newfun_env)
 			and ret_label=get_label () in
 			let prologue=(sp_add stext_size) and epilogue= [LABEL(ret_label)] @ (sp_add (-stext_size)) @ [RETURN]

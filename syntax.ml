@@ -5,7 +5,7 @@ type string_const = string
 type typename = IntType | VoidType | Array of typename | Pointer of typename
 				| Func of typename * typename list
 
-type parm= Parameter of typename * identifier
+type parm= Parameter of typename * identifier * int_const
 type vardecl_child = VarDeclChild of identifier * int_const option * int_const
 type vardecl = VarDecl of typename * vardecl_child list
 
@@ -43,6 +43,7 @@ and exp=
 |	CommaExpr of exp * exp
 |	VarRef of identifier
 |	Call of identifier * exp list
+|	Sizeof of exp
 |	ArrayRef of identifier * exp
 |	IntConst of int_const
 |	StringConst of string_const

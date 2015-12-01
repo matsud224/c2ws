@@ -68,17 +68,6 @@ open Syntax
 %token RETURN			/* return */
 %token EOF
 
-/*優先順位*/
-%right ASSIGN_OP
-%left LOGICALOR
-%left LOGICALAND
-%left EQUAL NOTEQUAL
-%left LESSER LESSEREQ GREATER GREATEREQ
-%left PLUS MINUS
-%left ASTERISK SLASH
-%right EXCLAMATION UMINUS PREINC PREDEC ADDRESS INDIRECTION
-%left POSTINC POSTDEC
-
 
 %type <Syntax.dcl list> prog
 %start prog
@@ -127,18 +116,18 @@ typename:
 parm_list:
 
 	{ [] }
-|	typename Id                       parm_list_additional
-	{ Parameter($1,$2) :: $3 }
-|	typename Id   LBRACKET RBRACKET   parm_list_additional
-	{ Parameter(Pointer($1),$2) :: $5 }
+|	typename var_decl_ptr Id                       parm_list_additional
+	{ Parameter($1,$3,$2) :: $4 }
+|	typename var_decl_ptr Id   LBRACKET RBRACKET   parm_list_additional
+	{ Parameter(Pointer($1),$3,$2) :: $6 }
 
 parm_list_additional:
 
 	{ [] }
-|	COMMA typename Id parm_list_additional
-	{ Parameter($2,$3) :: $4 }
-|	COMMA typename Id  LBRACKET RBRACKET parm_list_additional
-	{ Parameter(Array($2),$3) :: $6 }
+|	COMMA typename var_decl_ptr Id parm_list_additional
+	{ Parameter($2,$4,$3) :: $5 }
+|	COMMA typename var_decl_ptr Id  LBRACKET RBRACKET parm_list_additional
+	{ Parameter(Pointer($2),$4,$3) :: $7 }
 
 func:
 	typename Id LPAREN parm_list RPAREN LBRACE localvar_decl_list stmt_list RBRACE
@@ -171,19 +160,19 @@ stmt_list:
 	{ $1 :: $2 }
 
 stmt:
-	IF LPAREN commaexpr RPAREN stmt
+	IF LPAREN comma_expr RPAREN stmt
 	{ IfStat($3,$5,PassStat) }
-|	IF LPAREN commaexpr RPAREN stmt ELSE stmt
+|	IF LPAREN comma_expr RPAREN stmt ELSE stmt
 	{ IfStat($3,$5,$7) }
-|	WHILE LPAREN commaexpr RPAREN stmt
+|	WHILE LPAREN comma_expr RPAREN stmt
 	{ WhileStat($3,$5) }
-|	DO stmt WHILE LPAREN commaexpr RPAREN SEMICOLON
+|	DO stmt WHILE LPAREN comma_expr RPAREN SEMICOLON
 	{ DoStat($5,$2) }
-|	FOR LPAREN   commaexpr_option   SEMICOLON   commaexpr_option   SEMICOLON   commaexpr_option   RPAREN stmt
+|	FOR LPAREN   comma_expr_option   SEMICOLON   comma_expr_option   SEMICOLON   comma_expr_option   RPAREN stmt
 	{ ForStat($3,$5,$7,$9) }
-|	RETURN   commaexpr_option   SEMICOLON
+|	RETURN   comma_expr_option   SEMICOLON
 	{ ReturnStat($2) }
-|	commaexpr SEMICOLON
+|	comma_expr SEMICOLON
 	{ ExpStat($1) }
 |	LBRACE stmt_list RBRACE
 	{ Block($2) }
@@ -200,83 +189,121 @@ expr_option:
 |	expr
 	{ Some($1) }
 
-commaexpr_option:
+comma_expr_option:
 
 	{ None }
-|	commaexpr
+|	comma_expr
 	{ Some($1) }
 
-commaexpr:
+comma_expr:
 	expr
 	{ $1 }
-|	commaexpr COMMA expr
+|	comma_expr COMMA expr
 	{ CommaExpr($1,$3) }
 
 expr:
-	MINUS expr %prec UMINUS
-	{ Minus($2) }
-|	EXCLAMATION expr
-	{ Not($2) }
-|	expr PLUS expr
-	{ Add($1,$3) }
-|	expr MINUS expr
-	{ Sub($1,$3) }
-|	expr ASTERISK expr
-	{ Mul($1,$3) }
-|	expr SLASH expr
-	{ Div($1,$3) }
-|	expr PERCENT expr
-	{ Mod($1,$3) }
-|	expr EQUAL expr
-	{ Eq($1,$3) }
-|	expr NOTEQUAL expr
-	{ NotEq($1,$3) }
-|	expr LESSER expr
-	{ Lesser($1,$3) }
-|	expr GREATER expr
-	{ Greater($1,$3) }
-|	expr LESSEREQ expr
-	{ LesserEq($1,$3) }
-|	expr GREATEREQ expr
-	{ GreaterEq($1,$3) }
-|	expr LOGICALAND expr
-	{ LogicalAnd($1,$3) }
-|	expr LOGICALOR expr
-	{ LogicalOr($1,$3) }
-|	expr ASSIGNEQ expr %prec ASSIGN_OP
+	logical_or_expr
+	{ $1 }
+|	expr ASSIGNEQ logical_or_expr
 	{ Assign($1,$3) }
-|	expr ASSIGNPLUS expr %prec ASSIGN_OP
+|	expr ASSIGNPLUS logical_or_expr
 	{ AssignAdd($1,$3) }
-|	expr ASSIGNMINUS expr %prec ASSIGN_OP
+|	expr ASSIGNMINUS logical_or_expr
 	{ AssignSub($1,$3) }
-|	expr ASSIGNASTERISK expr %prec ASSIGN_OP
+|	expr ASSIGNASTERISK logical_or_expr
 	{ AssignMul($1,$3) }
-|	expr ASSIGNSLASH expr %prec ASSIGN_OP
+|	expr ASSIGNSLASH logical_or_expr
 	{ AssignDiv($1,$3) }
-|	expr ASSIGNPERCENT expr %prec ASSIGN_OP
+|	expr ASSIGNPERCENT logical_or_expr
 	{ AssignMod($1,$3) }
-|	expr INCREMENT %prec POSTINC
-	{ PostIncrement($1) }
-|	expr DECREMENT %prec POSTDEC
-	{ PostDecrement($1) }
-|	INCREMENT expr %prec PREINC
+
+logical_or_expr:
+	logical_and_expr
+	{ $1 }
+|	logical_or_expr LOGICALOR logical_and_expr
+	{ LogicalOr($1,$3) }
+
+logical_and_expr:
+	equality_expr
+	{ $1 }
+|	logical_and_expr LOGICALAND equality_expr
+	{ LogicalAnd($1,$3) }
+
+equality_expr:
+	relational_expr
+	{ $1 }
+|	equality_expr EQUAL relational_expr
+	{ Eq($1,$3) }
+|	equality_expr NOTEQUAL relational_expr
+	{ NotEq($1,$3) }
+
+relational_expr:
+	additive_expr
+	{ $1 }
+|	relational_expr LESSER additive_expr
+	{ Lesser($1,$3) }
+|	relational_expr GREATER additive_expr
+	{ Greater($1,$3) }
+|	relational_expr LESSEREQ additive_expr
+	{ LesserEq($1,$3) }
+|	relational_expr GREATEREQ additive_expr
+	{ GreaterEq($1,$3) }
+
+additive_expr:
+	multiplicative_expr
+	{ $1 }
+|	additive_expr PLUS multiplicative_expr
+	{ Add($1,$3) }
+|	additive_expr MINUS multiplicative_expr
+	{ Sub($1,$3) }
+
+multiplicative_expr:
+	unary_expr
+	{ $1 }
+|	multiplicative_expr ASTERISK unary_expr
+	{ Mul($1,$3) }
+|	multiplicative_expr SLASH unary_expr
+	{ Div($1,$3) }
+|	multiplicative_expr PERCENT unary_expr
+	{ Mod($1,$3) }
+
+unary_expr:
+	postfix_expr
+	{ $1 }
+|	MINUS unary_expr
+	{ Minus($2) }
+|	EXCLAMATION unary_expr
+	{ Not($2) }
+|	SIZEOF unary_expr
+	{ Sizeof($2) }
+|	INCREMENT unary_expr
 	{ PreIncrement($2) }
-|	DECREMENT expr %prec PREDEC
+|	DECREMENT unary_expr
 	{ PreDecrement($2) }
-|	ASTERISK expr %prec INDIRECTION
+|	ASTERISK unary_expr
 	{ Indirection($2) }
-|	AND expr %prec ADDRESS
+|	AND unary_expr
 	{ Address($2) }
-|	Id
-	{ VarRef($1) }
-|	Id LPAREN  expr_commasep_list   RPAREN
+
+postfix_expr:
+	primary_expr
+	{ $1 }
+|	postfix_expr LBRACKET expr RBRACKET
+	{ Indirection(Add($1,$3)) }
+|	Id LPAREN  expr_commasep_list RPAREN
 	{ Call($1,$3) }
-|	Id LBRACKET expr RBRACKET
-	{ ArrayRef($1,$3) }
-|	LPAREN commaexpr RPAREN
-	{ $2 }
+|	postfix_expr INCREMENT
+	{ PostIncrement($1) }
+|	postfix_expr DECREMENT
+	{ PostDecrement($1) }
+
+primary_expr:
+	Id
+	{ VarRef($1) }
 |	IntConst
 	{ IntConst($1) }
 |	StringConst
 	{ StringConst($1) }
+|	LPAREN comma_expr RPAREN
+	{ $2 }
 
