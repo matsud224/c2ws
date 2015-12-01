@@ -1,5 +1,5 @@
 OCAML = ocamlc
-OCAMLYACC = ocamlyacc
+OCAMLYACC = ocamlyacc 
 OCAMLLEX = ocamllex
 
 c2ws:	syntax.ml myparser.mli myparser.ml mylexer.ml main.ml

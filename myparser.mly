@@ -69,13 +69,16 @@ open Syntax
 %token EOF
 
 /*優先順位*/
+%right ASSIGN_OP
 %left LOGICALOR
 %left LOGICALAND
 %left EQUAL NOTEQUAL
-%nonassoc LESSER LESSEREQ GREATER GREATEREQ
+%left LESSER LESSEREQ GREATER GREATEREQ
 %left PLUS MINUS
 %left ASTERISK SLASH
-%right EXCLAMATION UMINUS
+%right EXCLAMATION UMINUS PREINC PREDEC ADDRESS INDIRECTION
+%left POSTINC POSTDEC
+
 
 %type <Syntax.dcl list> prog
 %start prog
@@ -99,11 +102,17 @@ dcl:
 |	VOID Id LPAREN parm_list RPAREN
 	{ PrototypeDecl(VoidType,$2,$4) }
 
+var_decl_ptr:
+	
+	{ 0 }
+|	ASTERISK var_decl_ptr
+	{ $2+1 }
+
 var_decl:
-	Id
-	{ VarDeclChild($1,None) }
-|	Id  LBRACKET IntConst RBRACKET
-	{ VarDeclChild($1,Some($3)) }
+	var_decl_ptr Id
+	{ VarDeclChild($2,None,$1) }
+|	var_decl_ptr Id  LBRACKET IntConst RBRACKET
+	{ VarDeclChild($2,Some($4),$1) }
 
 var_decl_additional:
 
@@ -162,20 +171,20 @@ stmt_list:
 	{ $1 :: $2 }
 
 stmt:
-	IF LPAREN expr RPAREN stmt
+	IF LPAREN commaexpr RPAREN stmt
 	{ IfStat($3,$5,PassStat) }
-|	IF LPAREN expr RPAREN stmt ELSE stmt
+|	IF LPAREN commaexpr RPAREN stmt ELSE stmt
 	{ IfStat($3,$5,$7) }
-|	WHILE LPAREN expr RPAREN stmt
+|	WHILE LPAREN commaexpr RPAREN stmt
 	{ WhileStat($3,$5) }
-|	FOR LPAREN   assg_option   SEMICOLON   expr_option   SEMICOLON   assg_option   RPAREN stmt
+|	DO stmt WHILE LPAREN commaexpr RPAREN SEMICOLON
+	{ DoStat($5,$2) }
+|	FOR LPAREN   commaexpr_option   SEMICOLON   commaexpr_option   SEMICOLON   commaexpr_option   RPAREN stmt
 	{ ForStat($3,$5,$7,$9) }
-|	RETURN   expr_option   SEMICOLON
+|	RETURN   commaexpr_option   SEMICOLON
 	{ ReturnStat($2) }
-|	assg SEMICOLON
-	{ AssignStat($1) }
-|	Id LPAREN expr_commasep_list RPAREN SEMICOLON
-	{ CallStat($1,$3) }
+|	commaexpr SEMICOLON
+	{ ExpStat($1) }
 |	LBRACE stmt_list RBRACE
 	{ Block($2) }
 |	CONTINUE
@@ -191,17 +200,17 @@ expr_option:
 |	expr
 	{ Some($1) }
 
-assg_option:
+commaexpr_option:
 
 	{ None }
-|	assg
+|	commaexpr
 	{ Some($1) }
 
-assg:
-	Id 							ASSIGNEQ expr
-	{ VarAssign($1,$3) }
-|	Id  LBRACKET expr RBRACKET  ASSIGNEQ expr
-	{ ArrayAssign($1,$3,$6) }
+commaexpr:
+	expr
+	{ $1 }
+|	commaexpr COMMA expr
+	{ CommaExpr($1,$3) }
 
 expr:
 	MINUS expr %prec UMINUS
@@ -234,13 +243,37 @@ expr:
 	{ LogicalAnd($1,$3) }
 |	expr LOGICALOR expr
 	{ LogicalOr($1,$3) }
+|	expr ASSIGNEQ expr %prec ASSIGN_OP
+	{ Assign($1,$3) }
+|	expr ASSIGNPLUS expr %prec ASSIGN_OP
+	{ AssignAdd($1,$3) }
+|	expr ASSIGNMINUS expr %prec ASSIGN_OP
+	{ AssignSub($1,$3) }
+|	expr ASSIGNASTERISK expr %prec ASSIGN_OP
+	{ AssignMul($1,$3) }
+|	expr ASSIGNSLASH expr %prec ASSIGN_OP
+	{ AssignDiv($1,$3) }
+|	expr ASSIGNPERCENT expr %prec ASSIGN_OP
+	{ AssignMod($1,$3) }
+|	expr INCREMENT %prec POSTINC
+	{ PostIncrement($1) }
+|	expr DECREMENT %prec POSTDEC
+	{ PostDecrement($1) }
+|	INCREMENT expr %prec PREINC
+	{ PreIncrement($2) }
+|	DECREMENT expr %prec PREDEC
+	{ PreDecrement($2) }
+|	ASTERISK expr %prec INDIRECTION
+	{ Indirection($2) }
+|	AND expr %prec ADDRESS
+	{ Address($2) }
 |	Id
 	{ VarRef($1) }
 |	Id LPAREN  expr_commasep_list   RPAREN
 	{ Call($1,$3) }
 |	Id LBRACKET expr RBRACKET
 	{ ArrayRef($1,$3) }
-|	LPAREN expr RPAREN
+|	LPAREN commaexpr RPAREN
 	{ $2 }
 |	IntConst
 	{ IntConst($1) }
