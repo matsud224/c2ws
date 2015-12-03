@@ -69,13 +69,13 @@ rule token = parse
     { 
 		let len=(length (Lexing.lexeme lexbuf)) - 2 in
 		let cut=sub (Lexing.lexeme lexbuf) 1 len in
-		let escapedstr=escaped cut in
+		let escapedstr=Scanf.unescaped cut in
 			IntConst(int_of_char (get escapedstr 0)) 
 	}
-| '\"' ([' ' - '~'] | escape)* '\"'
+| '\"' ([' ' - '~'])* '\"'
     { 
 		let len = (length (Lexing.lexeme lexbuf))-2 in
-		StringConst(sub (Lexing.lexeme lexbuf) 1 len)
+		StringConst(Scanf.unescaped (sub (Lexing.lexeme lexbuf) 1 len))
 	}
 | space+
     (* 空白をスキップして字句解析を続行 *)

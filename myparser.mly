@@ -1,5 +1,29 @@
 %{
+(*header:補助関数の定義*)
 open Syntax
+
+exception Enum_invalid_index
+
+let rec ptr_wrap t depth = if depth=0 then t else ptr_wrap (Pointer(t)) (depth-1)
+let rec make_vardecllist basetype children lst = 
+	match children with
+	| [] -> lst
+	| (id,ptrdep,None,init) :: rest -> (make_vardecllist basetype rest (lst @ [(VarDecl(ptr_wrap basetype ptrdep,id,None,init))]))
+	| (id,ptrdep,Some(len),init) :: rest -> (make_vardecllist basetype rest (lst @ [(VarDecl(ptr_wrap (Array(basetype)) ptrdep,id,Some(len),init))]))
+											
+let rec make_fielddecllist basetype children lst = 
+	match children with
+	| [] -> lst
+	| (id,ptrdep,None) :: rest -> make_fielddecllist basetype rest (lst @ [(FieldDecl(ptr_wrap basetype ptrdep,id,None))])
+	| (id,ptrdep,Some(len)) :: rest -> make_fielddecllist basetype rest (lst @ [(FieldDecl(ptr_wrap (Array(basetype)) ptrdep,id,Some(len)))])
+
+let rec make_enumdecllist children index lst = 
+	match children with
+	| [] -> lst
+	| (id,None) :: rest -> make_enumdecllist rest (index+1) (lst @ [(EnumDecl(id,index))])
+	| (id,Some(start)) :: rest when index<=start -> (make_enumdecllist rest (start+1) (lst @ [(EnumDecl(id,start))]))
+	| _ -> raise Enum_invalid_index
+	
 %}
 
 %token <string> Id
@@ -82,64 +106,141 @@ prog:
 	{ $1 :: $3 }
 |	func prog
 	{ $1 :: $2 }
-
+|	structure prog
+	{ $1 :: $2 }
+|	union prog
+	{ $1 :: $2 }
+|	enum prog
+	{ $1 :: $2 }
+	
 dcl:
-	typename var_decl var_decl_additional
-	{ GlobalVarDecl(VarDecl($1,$2 :: $3)) }
-|	typename Id LPAREN parm_list RPAREN
-	{ PrototypeDecl($1,$2,$4) }
-|	VOID Id LPAREN parm_list RPAREN
-	{ PrototypeDecl(VoidType,$2,$4) }
+	var_decl_list
+	{ GlobalVarDecl($1) }
+|	simple_typename some_asterisk Id LPAREN parm_list RPAREN
+	{ PrototypeDecl(ptr_wrap $1 $2,$3,$5) }
 
-var_decl_ptr:
+some_asterisk:
 	
 	{ 0 }
-|	ASTERISK var_decl_ptr
+|	ASTERISK some_asterisk
 	{ $2+1 }
 
 var_decl:
-	var_decl_ptr Id
-	{ VarDeclChild($2,None,$1) }
-|	var_decl_ptr Id  LBRACKET IntConst RBRACKET
-	{ VarDeclChild($2,Some($4),$1) }
+	some_asterisk Id
+	{ ($2,$1,None,None) }
+|	some_asterisk Id  LBRACKET IntConst RBRACKET
+	{ ($2,$1,Some($4),None) }
+|	some_asterisk Id ASSIGNEQ initialvalue
+	{ ($2,$1,None,Some($4)) }
+|	some_asterisk Id  LBRACKET RBRACKET ASSIGNEQ initialvalue
+	{ match $6 with InitArray(lst) -> ($2,$1,Some(List.length lst),Some($6)) }
+|	some_asterisk Id  LBRACKET IntConst RBRACKET ASSIGNEQ initialvalue
+	{ ($2,$1,Some($4),Some($7)) }
+	
 
+initialvalue_list:
+	initialvalue
+	{ [$1] }
+|	initialvalue_list COMMA initialvalue
+	{ $1 @ [$3] }
+
+initialvalue:
+	expr
+	{ InitExp($1) }
+|	LBRACE initialvalue_list RBRACE
+	{ InitArray($2) }
+	
 var_decl_additional:
 
 	{ [] }
 |	COMMA var_decl var_decl_additional
 	{ $2 :: $3 }
+	
+field_decl:
+	some_asterisk Id
+	{ ($2,$1,None) }
+|	some_asterisk Id  LBRACKET IntConst RBRACKET
+	{ ($2,$1,Some($4)) }
 
-typename:
+field_decl_additional:
+
+	{ [] }
+|	COMMA field_decl field_decl_additional
+	{ $2 :: $3 }
+	
+enum_decl:
+	Id
+	{ ($1,None) }
+|	Id ASSIGNEQ IntConst
+	{ ($1,Some($3)) }
+
+enum_decl_additional:
+
+	{ [] }
+|	COMMA enum_decl enum_decl_additional
+	{ $2 :: $3 }
+	
+enum_decl_list:
+
+	{ [] }
+|	enum_decl enum_decl_additional
+	{ make_enumdecllist ($1 :: $2) 0 [] }
+	
+structure:
+	STRUCT Id LBRACE field_decl_list RBRACE
+	{ StructDef($2,$4) }
+	
+union:
+	UNION Id LBRACE field_decl_list RBRACE
+	{ UnionDef($2,$4) }
+
+enum:
+	ENUM Id LBRACE enum_decl_list RBRACE
+	{ EnumDef($2,$4) }
+
+simple_typename:
 	INT
 	{ IntType }
+|	VOID
+	{ VoidType }
+|	STRUCT Id
+	{ StructType($2) }
+|	UNION Id
+	{ UnionType($2) }
+|	ENUM Id
+	{ EnumType($2) }
 
 parm_list:
 
 	{ [] }
-|	typename var_decl_ptr Id                       parm_list_additional
-	{ Parameter($1,$3,$2) :: $4 }
-|	typename var_decl_ptr Id   LBRACKET RBRACKET   parm_list_additional
-	{ Parameter(Pointer($1),$3,$2) :: $6 }
+|	simple_typename some_asterisk Id          parm_list_additional
+	{ Parameter(ptr_wrap $1 $2,$3) :: $4 }
+|	simple_typename some_asterisk Id   LBRACKET RBRACKET   parm_list_additional
+	{ Parameter(Pointer(ptr_wrap $1 $2),$3) :: $6 }
 
 parm_list_additional:
 
 	{ [] }
-|	COMMA typename var_decl_ptr Id parm_list_additional
-	{ Parameter($2,$4,$3) :: $5 }
-|	COMMA typename var_decl_ptr Id  LBRACKET RBRACKET parm_list_additional
-	{ Parameter(Pointer($2),$4,$3) :: $7 }
+|	COMMA simple_typename some_asterisk Id parm_list_additional
+	{ Parameter(ptr_wrap $2 $3,$4) :: $5 }
+|	COMMA simple_typename some_asterisk Id  LBRACKET RBRACKET parm_list_additional
+	{ Parameter(Pointer(ptr_wrap $2 $3),$4) :: $7 }
 
 func:
-	typename Id LPAREN parm_list RPAREN LBRACE localvar_decl_list stmt_list RBRACE
-	{ FuncDef($1,$2,$4,$7,$8) }
-|	VOID Id LPAREN parm_list RPAREN LBRACE localvar_decl_list stmt_list RBRACE
-	{ FuncDef(VoidType,$2,$4,$7,$8) }
+	simple_typename some_asterisk Id LPAREN parm_list RPAREN LBRACE var_decl_list stmt_list RBRACE
+	{ FuncDef(ptr_wrap $1 $2,$3,$5,$8,$9) }
 
-localvar_decl_list:
+var_decl_list:
 
 	{ [] }
-|	typename var_decl var_decl_additional SEMICOLON localvar_decl_list
-	{ VarDecl($1,$2 :: $3) :: $5 }
+|	simple_typename var_decl var_decl_additional SEMICOLON var_decl_list
+	{ (make_vardecllist $1 ($2 :: $3) []) @ $5 }
+	
+field_decl_list:
+
+	{ [] }
+|	simple_typename field_decl field_decl_additional SEMICOLON field_decl_list
+	{ (make_fielddecllist $1 ($2 :: $3) []) @ $5 }
 
 expr_commasep_list:
 
@@ -182,6 +283,16 @@ stmt:
 	{ BreakStat }
 |	SEMICOLON
 	{ PassStat }
+|	SWITCH LPAREN comma_expr RPAREN stmt
+	{ SwitchStat($3,$5) }
+|	GOTO Id
+	{ GotoStat($2) }
+|	DEFAULT COLON
+	{ DefaultLabel }
+|	CASE IntConst COLON
+	{ CaseLabel($2) }
+|	Id COLON
+	{ Label($1) }
 
 expr_option:
 
@@ -202,20 +313,26 @@ comma_expr:
 	{ CommaExpr($1,$3) }
 
 expr:
+	conditional_expr
+	{ $1 }
+|	unary_expr ASSIGNEQ conditional_expr
+	{ Assign($1,$3) }
+|	unary_expr ASSIGNPLUS conditional_expr
+	{ AssignAdd($1,$3) }
+|	unary_expr ASSIGNMINUS conditional_expr
+	{ AssignSub($1,$3) }
+|	unary_expr ASSIGNASTERISK conditional_expr
+	{ AssignMul($1,$3) }
+|	unary_expr ASSIGNSLASH conditional_expr
+	{ AssignDiv($1,$3) }
+|	unary_expr ASSIGNPERCENT conditional_expr
+	{ AssignMod($1,$3) }
+
+conditional_expr:
 	logical_or_expr
 	{ $1 }
-|	expr ASSIGNEQ logical_or_expr
-	{ Assign($1,$3) }
-|	expr ASSIGNPLUS logical_or_expr
-	{ AssignAdd($1,$3) }
-|	expr ASSIGNMINUS logical_or_expr
-	{ AssignSub($1,$3) }
-|	expr ASSIGNASTERISK logical_or_expr
-	{ AssignMul($1,$3) }
-|	expr ASSIGNSLASH logical_or_expr
-	{ AssignDiv($1,$3) }
-|	expr ASSIGNPERCENT logical_or_expr
-	{ AssignMod($1,$3) }
+|	logical_or_expr QUESTION comma_expr COLON conditional_expr
+	{ ConditionalExpr($1,$3,$5) }
 
 logical_or_expr:
 	logical_and_expr
@@ -258,14 +375,20 @@ additive_expr:
 	{ Sub($1,$3) }
 
 multiplicative_expr:
+	cast_expr
+	{ $1 }
+|	multiplicative_expr ASTERISK cast_expr
+	{ Mul($1,$3) }
+|	multiplicative_expr SLASH cast_expr
+	{ Div($1,$3) }
+|	multiplicative_expr PERCENT cast_expr
+	{ Mod($1,$3) }
+
+cast_expr:
 	unary_expr
 	{ $1 }
-|	multiplicative_expr ASTERISK unary_expr
-	{ Mul($1,$3) }
-|	multiplicative_expr SLASH unary_expr
-	{ Div($1,$3) }
-|	multiplicative_expr PERCENT unary_expr
-	{ Mod($1,$3) }
+|	LPAREN simple_typename some_asterisk RPAREN cast_expr
+	{ CastExpr(ptr_wrap $2 $3,$5) }
 
 unary_expr:
 	postfix_expr
@@ -275,7 +398,9 @@ unary_expr:
 |	EXCLAMATION unary_expr
 	{ Not($2) }
 |	SIZEOF unary_expr
-	{ Sizeof($2) }
+	{ ExprSizeof($2) }
+|	SIZEOF simple_typename some_asterisk
+	{ TypeSizeof(ptr_wrap $2 $3) }
 |	INCREMENT unary_expr
 	{ PreIncrement($2) }
 |	DECREMENT unary_expr
@@ -292,6 +417,10 @@ postfix_expr:
 	{ Indirection(Add($1,$3)) }
 |	Id LPAREN  expr_commasep_list RPAREN
 	{ Call($1,$3) }
+|	postfix_expr DOT Id
+	{ FieldRef($1,$3) }
+|	postfix_expr ARROW Id
+	{ ArrowRef($1,$3) }
 |	postfix_expr INCREMENT
 	{ PostIncrement($1) }
 |	postfix_expr DECREMENT

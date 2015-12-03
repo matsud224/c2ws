@@ -2,15 +2,25 @@ type identifier = string
 type int_const = int
 type string_const = string
 
+
 type typename = IntType | VoidType | Array of typename | Pointer of typename
 				| Func of typename * typename list
+				| StructType of identifier
+				| UnionType of identifier
+				| EnumType of identifier
 
-type parm= Parameter of typename * identifier * int_const
-type vardecl_child = VarDeclChild of identifier * int_const option * int_const
-type vardecl = VarDecl of typename * vardecl_child list
+and parm= Parameter of typename * identifier
+and init_value = InitExp of exp | InitArray of init_value list
+and vardecl = VarDecl of typename *  identifier * int_const  option * init_value option
+and fielddecl = FieldDecl of typename * identifier * int_const option
+and enumdecl= EnumDecl of identifier * int_const
 
-type dcl= GlobalVarDecl of vardecl | PrototypeDecl of typename * identifier * parm list
+
+and dcl= GlobalVarDecl of vardecl list | PrototypeDecl of typename * identifier * parm list
 			| FuncDef of typename * identifier * parm list * vardecl list * stat list 
+			| StructDef of identifier * fielddecl list
+			| UnionDef of identifier * fielddecl list
+			| EnumDef of identifier * enumdecl list
 
 and exp=
 	Minus of exp
@@ -40,11 +50,15 @@ and exp=
 |	PreDecrement of exp
 |	Indirection of exp
 |	Address of exp
+|	CastExpr of typename * exp
+|	ConditionalExpr of exp * exp * exp
 |	CommaExpr of exp * exp
 |	VarRef of identifier
 |	Call of identifier * exp list
-|	Sizeof of exp
-|	ArrayRef of identifier * exp
+|	ExprSizeof of exp
+|	TypeSizeof of typename
+|	ArrowRef of exp * identifier
+|	FieldRef of exp * identifier
 |	IntConst of int_const
 |	StringConst of string_const
 
@@ -59,14 +73,8 @@ and stat=
 |	ContinueStat
 |	BreakStat
 |	PassStat
-
-and assg=
-	VarAssign of identifier * exp
-|	ArrayAssign of identifier * exp * exp
-
-
-
-
-
-
-
+|	Label of identifier
+|	CaseLabel of int_const
+|	DefaultLabel
+|	SwitchStat of exp * stat
+|	GotoStat of identifier
