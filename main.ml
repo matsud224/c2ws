@@ -123,7 +123,7 @@ let rec print_type t=
 	| EnumType(id) -> "enum " ^ id
 
 type varinfo= StaticVar of typename * int (*アドレス*) | LocalVar of typename * int (*オフセット*) * int(*次の変数の開始位置*)
-			| ToplevelFunction of typename * int (*ラベル番号*) | Field of typename * int (*オフセット*) * int(*次の変数の開始位置*) | EnumerationConst of int 
+			| ToplevelFunction of typename * int (*ラベル番号*) | Field of typename * int (*オフセット*) * int(*次の変数の開始位置*) | EnumerationConst of typename * int 
 type taginfo= StructTag of int(*サイズ*) * ((identifier * varinfo) list) | UnionTag of int(*サイズ*) * ((identifier * varinfo) list) | EnumTag of ((identifier * varinfo) list)
 
 exception Defined_before
@@ -207,10 +207,19 @@ let addtoplevelfun id t symtbl=
 		{ symtbl with env = ((id,ToplevelFunction(t,newlabel))::x) :: (List.tl symtbl.env) }
 	| Some(_)  -> raise Defined_before
 
+let find_enumurator name symtbl=
+	let rec find_sub tags=
+		match tags with
+		| [] -> None
+		| (_,EnumTag(enums)) :: xs -> (try (Some(List.assoc name enums)) with Not_found -> find_sub xs)
+		| _ :: xs -> find_sub xs
+	in
+		find_sub symtbl.tags
+
 let find_env id symtbl=
 	let rec find_env_sub id env=
 		match env with
-		| [] -> None
+		| [] -> find_enumurator id symtbl
 		| x :: xs -> match (find_flame id x) with
 						| None -> find_env_sub id xs
 						| Some(content) -> Some(content)
@@ -321,6 +330,7 @@ and compile_exp x symtbl=
 					| Some(LocalVar(StructType(id) as struct_t,_,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) -> (push_bigdata_local a ssize,struct_t) )
 					| Some(LocalVar(UnionType(id) as union_t,_,a)) -> (match List.assoc id symtbl.tags with UnionTag(ssize,_) -> (push_bigdata_local a ssize,union_t) )
 					| Some(LocalVar(t,_,a)) -> (retrieve_sprel (-a+1), t)
+					| Some(EnumerationConst(t,c)) -> ([PUSH(c)], t)
 					| None -> raise Undefined_variable)
 	| Call("geti",[]) -> ([PUSH(1);ININT;PUSH(1);RETRIEVE], IntType) (*Input系命令は、スタックに格納先のヒープのアドレスをおいておかないといけない*)
 	| Call("getc",[]) -> ([PUSH(1);INCHAR;PUSH(1);RETRIEVE], IntType)
@@ -502,8 +512,9 @@ let make_fieldassoc c symtbl=
 								in  
 									match ele with
 									| FieldDecl(Pointer(StructType(t)) as ty,name,len) when t=id (*自身へのポインタは許可*)
-										-> (name,(Field( ty ,lastaddr,lastaddr+(sizeof ty (optlen len) symtbl)))) :: acc
-									| FieldDecl(t,name,len) -> (name,(Field(t,lastaddr,lastaddr+(sizeof t (optlen len) symtbl)))) :: acc
+										-> if not (List.mem_assoc name acc) then (name,(Field( ty ,lastaddr,lastaddr+(sizeof ty (optlen len) symtbl)))) :: acc else raise Defined_before
+									| FieldDecl(t,name,len)
+										-> if not (List.mem_assoc name acc) then (name,(Field(t,lastaddr,lastaddr+(sizeof t (optlen len) symtbl)))) :: acc else raise Defined_before
 								) [] fields)
 							in 
 							let size=get_lastaddr idvarlist in
@@ -513,17 +524,21 @@ let make_fieldassoc c symtbl=
 								in 
 									match ele with
 									| FieldDecl(Pointer(UnionType(t)) as ty,name,len) when t=id (*自身へのポインタは許可*)
-										-> (name,(Field( ty ,lastaddr,lastaddr+(sizeof ty (optlen len)  symtbl)))) :: acc
-									| FieldDecl(t,name,len) -> (name,(Field(t,lastaddr,lastaddr+(sizeof t (optlen len)  symtbl)))) :: acc
+										-> if not (List.mem_assoc name acc) then (name,(Field( ty ,lastaddr,lastaddr+(sizeof ty (optlen len)  symtbl)))) :: acc else raise Defined_before
+									| FieldDecl(t,name,len)
+										-> if not (List.mem_assoc name acc) then  (name,(Field(t,lastaddr,lastaddr+(sizeof t (optlen len)  symtbl)))) :: acc else raise Defined_before
 								) [] fields)
 							in 
 								let size=List.fold_left (fun acc ele -> match ele with (_,Field(_,s,e)) -> max acc (e-s)) 0 idvarlist
 							in
 								(size,idvarlist)
-								
-let make_enumassoc c symtbl= 
+
+let enum_is_defined name symtbl=
+	List.fold_left (fun acc ele-> if acc then true else match ele with (_,EnumTag(assoc))->List.mem_assoc name assoc | _ -> false) false symtbl.tags
+
+let make_enumassoc tname c symtbl= 
 	match c with 
-	| EnumDef(id,decls) -> List.map (function EnumDecl(name,c)-> (name,EnumerationConst(c))) decls
+	| EnumDef(id,decls) -> List.fold_left (fun acc ele -> match ele with EnumDecl(name,c)-> if ((List.mem_assoc name acc) || (enum_is_defined name symtbl)) then raise Defined_before else (name,EnumerationConst(EnumType(tname),c))::acc) [] decls
 
 let rec compile_toplevel x symtbl=
 	match x with
@@ -561,7 +576,7 @@ let rec compile_toplevel x symtbl=
 	| UnionDef(id,fields) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
 								else (let (s,f)=(make_fieldassoc definition symtbl) in ({symtbl with tags=(id,(UnionTag(s,f)))::symtbl.tags},[]))
 	| EnumDef(id,enums) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
-								else ({symtbl with tags=(id,EnumTag(make_enumassoc definition symtbl))::symtbl.tags},[])
+								else ({symtbl with tags=(id,EnumTag(make_enumassoc id definition symtbl))::symtbl.tags},[])
 
 let rec compile ast symtbl asm=
 	match ast with

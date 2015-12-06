@@ -2,7 +2,6 @@
 (*header:補助関数の定義*)
 open Syntax
 
-exception Enum_invalid_index
 
 let rec ptr_wrap t depth = if depth=0 then t else ptr_wrap (Pointer(t)) (depth-1)
 let rec make_vardecllist basetype children lst = 
@@ -21,8 +20,7 @@ let rec make_enumdecllist children index lst =
 	match children with
 	| [] -> lst
 	| (id,None) :: rest -> make_enumdecllist rest (index+1) (lst @ [(EnumDecl(id,index))])
-	| (id,Some(start)) :: rest when index<=start -> (make_enumdecllist rest (start+1) (lst @ [(EnumDecl(id,start))]))
-	| _ -> raise Enum_invalid_index
+	| (id,Some(start)) :: rest -> (make_enumdecllist rest (start+1) (lst @ [(EnumDecl(id,start))]))
 	
 %}
 
