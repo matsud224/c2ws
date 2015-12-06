@@ -259,6 +259,10 @@ stmt_list:
 	{ [] }
 |	stmt stmt_list
 	{ $1 :: $2 }
+	
+block:
+|	LBRACE var_decl_list stmt_list RBRACE
+	{ Block($2,$3) } 
 
 stmt:
 	IF LPAREN comma_expr RPAREN stmt
@@ -275,8 +279,8 @@ stmt:
 	{ ReturnStat($2) }
 |	comma_expr SEMICOLON
 	{ ExpStat($1) }
-|	LBRACE stmt_list RBRACE
-	{ Block($2) }
+|	block
+	{ $1 }
 |	CONTINUE
 	{ ContinueStat }
 |	BREAK
@@ -287,10 +291,10 @@ stmt:
 	{ SwitchStat($3,$5) }
 |	GOTO Id
 	{ GotoStat($2) }
-|	DEFAULT COLON
-	{ DefaultLabel }
-|	CASE IntConst COLON
-	{ CaseLabel($2) }
+|	DEFAULT COLON stmt_list
+	{ DefaultLabel($3) }
+|	CASE IntConst COLON stmt_list
+	{ CaseLabel($2,$4) }
 |	Id COLON
 	{ Label($1) }
 
@@ -318,15 +322,15 @@ expr:
 |	unary_expr ASSIGNEQ conditional_expr
 	{ Assign($1,$3) }
 |	unary_expr ASSIGNPLUS conditional_expr
-	{ AssignAdd($1,$3) }
+	{ Assign($1,Add($1,$3)) }
 |	unary_expr ASSIGNMINUS conditional_expr
-	{ AssignSub($1,$3) }
+	{ Assign($1,Sub($1,$3)) }
 |	unary_expr ASSIGNASTERISK conditional_expr
-	{ AssignMul($1,$3) }
+	{ Assign($1,Mul($1,$3)) }
 |	unary_expr ASSIGNSLASH conditional_expr
-	{ AssignDiv($1,$3) }
+	{ Assign($1,Div($1,$3)) }
 |	unary_expr ASSIGNPERCENT conditional_expr
-	{ AssignMod($1,$3) }
+	{ Assign($1,Mod($1,$3)) }
 
 conditional_expr:
 	logical_or_expr
@@ -395,6 +399,8 @@ unary_expr:
 	{ $1 }
 |	MINUS unary_expr
 	{ Minus($2) }
+|	PLUS unary_expr
+	{ Plus($2) }
 |	EXCLAMATION unary_expr
 	{ Not($2) }
 |	SIZEOF unary_expr
@@ -402,9 +408,9 @@ unary_expr:
 |	SIZEOF simple_typename some_asterisk
 	{ TypeSizeof(ptr_wrap $2 $3) }
 |	INCREMENT unary_expr
-	{ PreIncrement($2) }
+	{ Assign($2,Add($2,IntConst(1))) }
 |	DECREMENT unary_expr
-	{ PreDecrement($2) }
+	{ Assign($2,Sub($2,IntConst(1))) }
 |	ASTERISK unary_expr
 	{ Indirection($2) }
 |	AND unary_expr
@@ -420,7 +426,7 @@ postfix_expr:
 |	postfix_expr DOT Id
 	{ FieldRef($1,$3) }
 |	postfix_expr ARROW Id
-	{ ArrowRef($1,$3) }
+	{ FieldRef(Indirection($1),$3) }
 |	postfix_expr INCREMENT
 	{ PostIncrement($1) }
 |	postfix_expr DECREMENT

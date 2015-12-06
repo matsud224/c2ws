@@ -118,6 +118,9 @@ let rec print_type t=
 	| Array (st) -> (print_type st) ^ "[]"
 	| Pointer (st) -> (print_type st) ^ "*"
 	| Func (rt , params) -> (print_type rt) ^ "(" ^ (String.concat ", " (List.map print_type params)) ^ ")"
+	| StructType(id) -> "struct " ^ id
+	| UnionType(id) -> "union " ^ id
+	| EnumType(id) -> "enum " ^ id
 
 type varinfo= StaticVar of typename * int (*アドレス*) | LocalVar of typename * int (*オフセット*) * int(*次の変数の開始位置*)
 			| ToplevelFunction of typename * int (*ラベル番号*) | Field of typename * int (*オフセット*) * int(*次の変数の開始位置*) | EnumerationConst of int 
@@ -127,10 +130,16 @@ exception Defined_before
 exception Type_error of typename * typename
 exception Undefined_variable
 exception Undefined_function
+exception Undefined_label
+exception Undefined_tag
 exception Notfound_main
 exception ContinueStat_not_within_loop
 exception BreakStat_not_within_loop
-exception Invalid_lvalue
+exception CaseLabel_not_within_switchstat
+exception DefaultLabel_not_within_switchstat
+exception Invalid_enumindex
+exception Cast_error
+exception Lvalue_required
 
 let _label=ref 0
 let get_label ()=
@@ -142,19 +151,27 @@ let get_staticvar size=
 	let temp = !_stvar in
 		_stvar := !_stvar+size; temp
 
-let rec sizeof t len=
-	match t with
-	| IntType -> 1
-	| VoidType -> 0
-	| Array(s) -> len * (sizeof s 1)
-	| Pointer(s) -> 1
-	| Func(_,_) -> 0
-	
-type symtable={
+
+type 'a symtable={
 	env: (identifier * varinfo) list list;
 	tags: (identifier * taginfo) list;
 	labels: (identifier * int) list;
+	constants: 'a; 
+	switchlabels: (int option * int) list; (*Noneの場合はdefaultを表す*)
 }
+
+let rec sizeof t len symtbl=
+	match t with
+	| IntType -> 1
+	| VoidType -> 0
+	| Array(s) -> len * (sizeof s 1 symtbl)
+	| Pointer(s) -> 1
+	| Func(_,_) -> 0
+	| StructType(id) -> (try let StructTag(s,_) = List.assoc id symtbl.tags in s with Not_found -> raise Undefined_tag)
+	| UnionType(id) -> (try let UnionTag(s,_) = List.assoc id symtbl.tags in s with Not_found -> raise Undefined_tag)
+	| EnumType(id) -> if List.mem_assoc id symtbl.tags then (sizeof IntType 1 symtbl) else raise Undefined_tag
+
+
 	
 let rec make_ptrtype t depth = if depth=0 then t else make_ptrtype (Pointer(t)) (depth-1)
 
@@ -173,15 +190,15 @@ let last_localaddr symtbl=
 let addstaticvar id t len symtbl init before_asm=
 	let x=List.hd symtbl.env in
 		match (find_flame id x) with
-		| None -> let addr=get_staticvar (sizeof t len) in
+		| None -> let addr=get_staticvar (sizeof t len symtbl) in
 			( {symtbl with env=((id,StaticVar(t,addr))::x) :: (List.tl symtbl.env)} , before_asm @ [] )
 		| Some(_)  -> raise Defined_before
 
 let addlocalvar id t len symtbl init before_asm=
 	let x=List.hd symtbl.env in
 		match (find_flame id x) with
-		| None -> let last_addr=last_localaddr symtbl in
-			( { symtbl with env=((id,LocalVar(t,last_addr,last_addr+(sizeof t len))) :: x) :: symtbl.env } , before_asm @ [] )
+		| None -> let last_addr=last_localaddr symtbl in 
+			( { symtbl with env=((id,LocalVar(t,last_addr,last_addr+(sizeof t len symtbl))) :: x) :: symtbl.env } , before_asm @ [] )
 		| Some(_)  -> raise Defined_before
 
 let addtoplevelfun id t symtbl=
@@ -206,7 +223,6 @@ let sp_add x= [PUSH(x)] @ get_sp @ [ADD] @ set_sp
 let retrieve_sprel offset= get_sp @ [PUSH(offset);ADD;RETRIEVE] (*スタックトップに取ってきた値を置く*)
 let store_sprel offset= get_sp @ [PUSH(offset);ADD;SWAP;STORE] (*スタックトップにストアする値があると仮定*)
 
-
 let rec compile_lvalue x symtbl=
 	match x with
 	| VarRef(id) -> (match (find_env id symtbl) with
@@ -215,12 +231,25 @@ let rec compile_lvalue x symtbl=
 					| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
 					| Some(LocalVar(t,_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
 					| _ -> raise Undefined_variable)
+	| FieldRef(exp,fieldid) -> (let (exp_a,Pointer(exp_t))=compile_lvalue exp symtbl in
+								match exp_t with
+								| StructType(t) -> (match List.assoc t symtbl.tags with StructTag(_,pairs) -> (match List.assoc fieldid pairs with
+																											| Field(ty,b,e) -> (exp_a @ [PUSH(b);ADD], Pointer(ty)) ))
+								| UnionType(t) -> (match List.assoc t symtbl.tags with UnionTag(_,pairs) -> (match List.assoc fieldid pairs with
+																											| Field(ty,b,e) -> (exp_a,Pointer(ty) )))
+								)
 	| Indirection(exp) -> (let (exp_a,Pointer(t))=compile_exp exp symtbl in (exp_a,Pointer(t)))
-	| _ -> raise Invalid_lvalue
+	| _ -> raise Lvalue_required
+
+and ssr_seq offset times asm=
+	if times=0 then asm else ssr_seq offset (times-1) ((store_sprel (offset+times-1))@asm)
+and rsr_seq offset asm=
+	if offset<1 then asm else rsr_seq (offset-1) (asm@(retrieve_sprel (offset)))
 
 and compile_exp x symtbl=
 	match x with
-	| Minus(exp) -> let (a1,t1)=compile_exp exp symtbl in (a1 @ [PUSH(-1);MUL],IntType)
+	| Plus(exp) -> let (a1,IntType)=compile_exp exp symtbl in (a1,IntType)
+	| Minus(exp) -> let (a1,IntType)=compile_exp exp symtbl in (a1 @ [PUSH(-1);MUL],IntType)
 	| Not(exp) -> let (a1,IntType)=compile_exp exp symtbl and (zlabel,margelabel)=(get_label (),get_label ()) in
 					(a1 @ [JZ(zlabel);PUSH(0);JUMP(margelabel);LABEL(zlabel);PUSH(1);LABEL(margelabel)], IntType)
 	| Add(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl  in let asm=a1 @ a2 @ [ADD] in
@@ -247,12 +276,18 @@ and compile_exp x symtbl=
 							match (t1,t2) with
 							| (IntType,IntType) -> (asm,IntType)
 							| _ -> raise (Type_error (t1,t2)))
-	| Eq(exp1,exp2) -> let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl and (zlabel,margelabel)=(get_label (),get_label ()) in
-						if t1<>t2 then raise (Type_error (t1,t2))
-						else (a1 @ a2 @ [SUB;JZ(zlabel);PUSH(0);JUMP(margelabel);LABEL(zlabel);PUSH(1);LABEL(margelabel)], IntType)
-	| NotEq(exp1,exp2) -> let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl and (zlabel,margelabel)=(get_label (),get_label ()) in
-							if t1<>t2 then raise (Type_error (t1,t2))
-							else (a1 @ a2 @ [SUB;JZ(zlabel);PUSH(1);JUMP(margelabel);LABEL(zlabel);PUSH(0);LABEL(margelabel)], IntType)
+	| Eq(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl and (zlabel,margelabel)=(get_label (),get_label ()) in
+						match (t1,t2) with
+						| (a,b) when a<>b -> raise (Type_error (t1,t2))
+						| (StructType(_),StructType(_)) -> raise (Type_error (t1,t2))
+						| (UnionType(_),UnionType(_))  -> raise (Type_error (t1,t2))
+						| _ -> (a1 @ a2 @ [SUB;JZ(zlabel);PUSH(0);JUMP(margelabel);LABEL(zlabel);PUSH(1);LABEL(margelabel)], IntType)   )
+	| NotEq(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl and (zlabel,margelabel)=(get_label (),get_label ()) in
+						match (t1,t2) with
+						| (a,b) when a<>b -> raise (Type_error (t1,t2))
+						| (StructType(_),StructType(_))  -> raise (Type_error (t1,t2))
+						| (UnionType(_),UnionType(_))  -> raise (Type_error (t1,t2))
+						| _ -> (a1 @ a2 @ [SUB;JZ(zlabel);PUSH(1);JUMP(margelabel);LABEL(zlabel);PUSH(0);LABEL(margelabel)], IntType)   )
 	| Lesser(exp1,exp2) -> let (a1,IntType)=compile_exp exp1 symtbl and (a2,IntType)=compile_exp exp2 symtbl and (nlabel,margelabel)=(get_label (),get_label ()) in
 							(a1 @ a2 @ [SUB;JN(nlabel);PUSH(0);JUMP(margelabel);LABEL(nlabel);PUSH(1);LABEL(margelabel)], IntType)
 	| Greater(exp1,exp2) -> compile_exp (Lesser (exp2,exp1)) symtbl
@@ -264,25 +299,29 @@ and compile_exp x symtbl=
 								and (nextlabel,falselabel,margelabel)=(get_label (),get_label (),get_label ()) in
 								(a1 @ [JZ(nextlabel)] @ [PUSH(1);JUMP(margelabel);LABEL(nextlabel)]
 								@ a2 @ [JZ(falselabel);PUSH(1);JUMP(margelabel);LABEL(falselabel);PUSH(0);LABEL(margelabel)], IntType)
-	| Assign(target,exp) -> let (target_a,Pointer(target_t))=compile_lvalue target symtbl and (exp_a,exp_t)=compile_exp exp symtbl in
-							if target_t<>exp_t then raise (Type_error (target_t,exp_t)) else (exp_a @ [DUP] @ target_a @ [SWAP;STORE],exp_t)
-	| AssignAdd(target,exp) -> compile_exp (Assign (target,(Add (target,exp)))) symtbl
-	| AssignSub(target,exp) -> compile_exp (Assign (target,(Sub (target,exp)))) symtbl
-	| AssignMul(target,exp) -> compile_exp (Assign (target,(Mul (target,exp)))) symtbl
-	| AssignDiv(target,exp) -> compile_exp (Assign (target,(Div (target,exp)))) symtbl
-	| AssignMod(target,exp) -> compile_exp (Assign (target,(Mod (target,exp)))) symtbl
-	| PreIncrement(exp) -> compile_exp (AssignAdd(exp,(IntConst(1)))) symtbl
-	| PreDecrement(exp) -> compile_exp (AssignAdd(exp,(IntConst(-1)))) symtbl
+	| Assign(target,exp) -> (let (target_a,Pointer(target_t))=compile_lvalue target symtbl and (exp_a,exp_t)=compile_exp exp symtbl in
+							if target_t<>exp_t then raise (Type_error (target_t,exp_t))
+							else match target_t with
+							| StructType(t) -> (match List.assoc t symtbl.tags with StructTag(ssize,_) ->
+								let rec push_bigdata cnt size=if size>0 then [DUP]@(retrieve_sprel cnt)@[STORE;PUSH(1);ADD]@(push_bigdata (cnt+1) (size-1)) else [] in
+									(exp_a @ target_a @(push_bigdata 1 ssize)@[DISCARD],exp_t) )
+							| _ -> (exp_a @ [DUP] @ target_a @ [SWAP;STORE],exp_t) )
 	| PostIncrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp symtbl and (texp_a,texp_t)=compile_exp exp symtbl in
 								(texp_a @ [DUP;PUSH(1);ADD] @ target_a @ [SWAP;STORE], target_t)
 	| PostDecrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp symtbl and (texp_a,texp_t)=compile_exp exp symtbl in
 								(texp_a @ [DUP;PUSH(-1);ADD] @ target_a @ [SWAP;STORE], target_t)
 	| VarRef(id) -> (match (find_env id symtbl) with
 					| Some(StaticVar(Array(t),a)) -> ([PUSH(a)], Pointer(t))
+					| Some(StaticVar(StructType(id) as struct_t,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) ->
+																let rec push_bigdata size=if size>0 then ([PUSH(a+size-1);RETRIEVE])@(store_sprel size)@(push_bigdata (size-1)) else [] in
+																(push_bigdata ssize, struct_t) )
 					| Some(StaticVar(t,a)) -> ([PUSH(a); RETRIEVE], t)
 					| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
+					| Some(LocalVar(StructType(id) as struct_t,_,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) ->
+																let rec push_bigdata size=if size>0 then (retrieve_sprel (-a+1+size-1))@(store_sprel size)@(push_bigdata (size-1)) else [] in
+																(push_bigdata ssize,struct_t) )
 					| Some(LocalVar(t,_,a)) -> (retrieve_sprel (-a+1), t)
-					| _ -> raise Undefined_variable)
+					| None -> raise Undefined_variable)
 	| Call("geti",[]) -> ([PUSH(1);ININT;PUSH(1);RETRIEVE], IntType) (*Input系命令は、スタックに格納先のヒープのアドレスをおいておかないといけない*)
 	| Call("getc",[]) -> ([PUSH(1);INCHAR;PUSH(1);RETRIEVE], IntType)
 	| Call("puti",[arg1]) -> let (arg_a,IntType)=compile_exp arg1 symtbl in (arg_a @ [OUTINT],VoidType)
@@ -293,41 +332,111 @@ and compile_exp x symtbl=
 									let asts=List.map2 (
 										fun arg par -> 
 											match (arg,par) with
-											| ((a,t),ty) -> if t<>ty then raise (Type_error (t,ty)) else (a,sizeof t 1)
+											| ((a,t),ty) -> if t<>ty then raise (Type_error (t,ty)) else (a,t,sizeof t 1 symtbl)
 									) args params
 									in
-									let rec argpush_asmgen args offset asm = match args with
+									(*一旦オペランドスタックに引数をプッシュして、ヒープに移す*)
+									let rec argpush_asmgen args asm = match args with
 																	| [] -> asm
-																	| (a,s) :: rest -> argpush_asmgen rest (offset+s) (asm @ a @ (store_sprel offset))
+																			(*struct/unionは評価するとSPの下に値がのる*)
+																	| (a,StructType(id),s) :: rest -> argpush_asmgen rest (asm @ a @ (rsr_seq s []))
+																	| (a,UnionType(_),s) :: rest -> argpush_asmgen rest (asm @ a @ (rsr_seq s []))
+																	| (a,_,s) :: rest -> argpush_asmgen rest (asm @ a)
+									and
+										total_argsize=List.fold_left (fun acc ele -> match ele with (_,_,s) -> acc+s) 0 asts
+									and
+										to_opstack=match rett with
+													| StructType(_) | UnionType(_) -> []
+													| _ -> (rsr_seq (sizeof rett 1 symtbl) [])
 									in
-										((argpush_asmgen (asts) ((sizeof rett 1)+1) []) @ (sp_add (sizeof rett 1))
-											@ [CALL(label)] @ (retrieve_sprel 0) @ (sp_add (-(sizeof rett 1))) , rett)
+										((argpush_asmgen (asts) []) @ (sp_add (sizeof rett 1 symtbl)) @ (ssr_seq 1 total_argsize [])
+											@ [CALL(label)] @ to_opstack @ (sp_add (-(sizeof rett 1 symtbl))) , rett)
 							| _ -> raise Undefined_function)
 	| Address(exp) -> compile_lvalue exp symtbl
 	| Indirection(exp) -> let (exp_a,Pointer(t))=compile_exp exp symtbl in (exp_a @ [RETRIEVE],t)
 	| CommaExpr(exp1,exp2) -> let (exp1_a,_)=compile_exp exp1 symtbl and (exp2_a,exp2_t)=compile_exp exp2 symtbl in (exp1_a @ exp2_a, exp2_t)
 	| IntConst(const) -> ([PUSH(const)], IntType)
-	(*| StringConst(const) ->
-	| ExprSizeof of exp ->
-	| TypeSizeof of typename
-	| ArrowRef of exp * identifier
-	| FieldRef of exp * identifier
-	| CastExpr of typename * exp
-	| ConditionalExpr of exp * exp * exp*)
-
-
-let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相対位置*) breaklabel continuelabel (*break,continuelabel共にoption*)=
-	match x with
-	| IfStat(cond,cons,alt) -> let (cond_a,IntType)=compile_exp cond symtbl and cons_a=compile_stat cons symtbl returntype returnlabel retvaladdr breaklabel continuelabel
-								and alt_a=compile_stat alt symtbl returntype returnlabel retvaladdr breaklabel continuelabel in
+	| StringConst(const) -> let addr=get_staticvar ((String.length const)+1) in (Hashtbl.add symtbl.constants addr const);([PUSH(addr)], Pointer(IntType))
+	| ExprSizeof(exp) -> let (exp_a,t)=compile_exp exp symtbl in compile_exp (TypeSizeof(t)) symtbl
+	| TypeSizeof(t) -> ([PUSH(sizeof t 1 symtbl)],IntType)
+	| FieldRef(exp,fieldid) -> let val_load ty= (match ty with (*ロード元アドレスは、スタックトップにある*)
+												| Array(t) -> ([], Pointer(t))
+												| StructType(id) as struct_t -> 
+													(match List.assoc id symtbl.tags with StructTag(ssize,_) ->
+														let rec push_bigdata size=if size>0 then [DUP;RETRIEVE]@(store_sprel size)@[ADD]@(push_bigdata (size-1)) else [] in
+															((push_bigdata ssize)@[DISCARD], struct_t) )
+												| t -> ([RETRIEVE], t) ) in
+								(try let (exp_a,Pointer(exp_t))=compile_lvalue exp symtbl in
+								match exp_t with
+								| StructType(t) -> (match List.assoc t symtbl.tags with StructTag(_,pairs) -> (match List.assoc fieldid pairs with
+																											| Field(ty,b,e) -> let (loadasm,t)=val_load ty in
+																												(exp_a@[PUSH(b);ADD]@loadasm, t) ) )
+								| UnionType(t) -> (match List.assoc t symtbl.tags with UnionTag(_,pairs) -> (match List.assoc fieldid pairs with
+																											| Field(ty,b,e) -> let (loadasm,t)=val_load ty in
+																												(exp_a@loadasm, t) ) )
+								with Lvalue_required -> 
+									(*lvalueが得られなかったので、rvalueを深さ指定で取得*)
+									let (exp_a,exp_t)=compile_exp exp symtbl in
+										match exp_t with
+										| StructType(t) -> (match List.assoc t symtbl.tags with StructTag(_,pairs) -> (match List.assoc fieldid pairs with
+																													| Field(ty,b,e) -> let (loadasm,t)=val_load ty in
+																														(exp_a@[PUSH(0);RETRIEVE;PUSH(1);ADD;PUSH(b);ADD]@loadasm, t) ) )
+										| UnionType(t) -> (match List.assoc t symtbl.tags with UnionTag(_,pairs) -> (match List.assoc fieldid pairs with
+																													| Field(ty,b,e) -> let (loadasm,t)=val_load ty in
+																														(exp_a@[PUSH(0);RETRIEVE;PUSH(1);ADD]@loadasm, t) ) )
+								)
+	| CastExpr(to_type,exp) -> (let (exp_a,exp_t)=compile_exp exp symtbl in
+								if exp_t=to_type then (exp_a,exp_t)
+								else
+									match (exp_t,to_type) with
+									| (IntType,Pointer(t)) -> (exp_a,to_type)
+									| (Pointer(t),IntType) -> (exp_a,to_type)
+									| (Pointer(s),Pointer(t)) -> (exp_a,to_type)
+									| (EnumType(t),IntType) -> (exp_a,to_type)
+									| (IntType,EnumType(t)) -> (exp_a,to_type)
+									| _ -> raise Cast_error )
+	| ConditionalExpr(cond,truepart,falsepart) -> let (cond_a,IntType)=compile_exp cond symtbl
+								and (tp_a,tp_t)=compile_exp truepart symtbl and (fp_a,fp_t)=compile_exp falsepart symtbl in
 								let elselabel=get_label () and endiflabel=get_label () in 
-										cond_a @ [JZ(elselabel)] @ cons_a @ [JUMP(endiflabel)] @ [LABEL(elselabel)] @ alt_a @ [LABEL(endiflabel)]
+								if tp_t <> fp_t then raise (Type_error (tp_t,fp_t))
+								else (cond_a @ [JZ(elselabel)] @ tp_a @ [JUMP(endiflabel)] @ [LABEL(elselabel)] @ fp_a @ [LABEL(endiflabel)], tp_t)
+
+
+(*スタックトップに条件式を評価したものがおいてあると仮定*)
+let make_switchasm cases symtbl = 
+	let h=Hashtbl.create 5 in
+		(List.iter (function (value,lb) -> if Hashtbl.mem h value then raise Defined_before else Hashtbl.add h value lb) cases);
+	let keys=Hashtbl.fold (fun key value acc -> match key with
+											| None -> acc
+											| Some(k) -> k :: acc
+								) h [] in
+	let sortedkeys=List.sort compare  keys (*昇順*) in
+	let rec binarysearch_if imin imax skeys=
+		if imin>imax then [LABEL(Hashtbl.find h None)]
+		else
+			let imid=imin+(imax-imin)/2 and (glabel,eqlabel,endlabel)=(get_label (),get_label (),get_label ()) in
+			[DUP;PUSH(List.nth skeys imid);SUB;JN(glabel);DUP;PUSH(List.nth skeys imid);SUB;JZ(eqlabel)] @ (binarysearch_if imin (imid-1) skeys) @ [JUMP(endlabel)]
+			@ [LABEL(glabel)] @ (binarysearch_if (imid+1) imax skeys) @ [JUMP(endlabel)]
+			@ [LABEL(eqlabel)] @ [DISCARD;LABEL(Hashtbl.find h (Some(imid)))] @ [LABEL(endlabel)]
+	in
+		binarysearch_if 0 (List.length keys) sortedkeys
+
+
+let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相対位置*) breaklabel continuelabel (*共にoption*) in_switch=
+	match x with
+	| IfStat(cond,cons,alt) -> let (cond_a,IntType)=compile_exp cond symtbl
+								and (cons_a,st1)=(compile_stat cons symtbl returntype returnlabel retvaladdr breaklabel continuelabel in_switch) in
+								let (alt_a,st2)=(compile_stat alt st1 returntype returnlabel retvaladdr breaklabel continuelabel in_switch) in
+								let elselabel=get_label () and endiflabel=get_label () in 
+										(cond_a @ [JZ(elselabel)] @ cons_a @ [JUMP(endiflabel)] @ [LABEL(elselabel)] @ alt_a @ [LABEL(endiflabel)] ,st2)
 	| WhileStat(cond, stat) -> let beginlabel=get_label () and endlabel=get_label () in
-								let (cond_a,IntType)=compile_exp cond  symtbl and stat_a=compile_stat stat  symtbl returntype returnlabel retvaladdr (Some(endlabel)) continuelabel in
-										[LABEL(beginlabel)] @ cond_a @ [JZ(endlabel)] @ stat_a @ [JUMP(beginlabel); LABEL(endlabel)]
+								let (cond_a,IntType)=compile_exp cond  symtbl
+								and (stat_a,st1)=(compile_stat stat  symtbl returntype returnlabel retvaladdr (Some(endlabel)) continuelabel in_switch) in
+										([LABEL(beginlabel)] @ cond_a @ [JZ(endlabel)] @ stat_a @ [JUMP(beginlabel); LABEL(endlabel)] ,st1)
 	| DoStat(cond, stat) -> let beginlabel=get_label () and endlabel=get_label () in
-								let (cond_a,IntType)=compile_exp cond  symtbl and stat_a=compile_stat stat  symtbl returntype returnlabel retvaladdr (Some(endlabel)) continuelabel in
-										[LABEL(beginlabel)] @ stat_a @ cond_a @ [JZ(endlabel); JUMP(beginlabel); LABEL(endlabel)]
+								let (cond_a,IntType)=compile_exp cond  symtbl
+								and (stat_a,st1)=(compile_stat stat  symtbl returntype returnlabel retvaladdr (Some(endlabel)) continuelabel in_switch) in
+										([LABEL(beginlabel)] @ stat_a @ cond_a @ [JZ(endlabel); JUMP(beginlabel); LABEL(endlabel)] ,st1)
 	| ForStat(init, cond, continue, stat) -> let (nextlabel,contlabel,endlabel)=(get_label (),get_label (),get_label ()) in 
 											let initasm=match init with
 														| None -> []
@@ -338,33 +447,82 @@ let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相�
 											and continueasm=match continue with
 															| None -> []
 															| Some(exp) -> let (a,t)=compile_exp exp symtbl in (a @ (if t <> VoidType then [DISCARD] else []))
-											and statasm=compile_stat stat symtbl returntype returnlabel retvaladdr (Some(endlabel)) (Some(contlabel)) in
-												initasm @ [LABEL(nextlabel)] @ condasm @ [JZ(endlabel)]  @ statasm @ [LABEL(contlabel)] @ continueasm @ [JUMP(nextlabel);LABEL(endlabel)]
+											and (statasm,st1)=(compile_stat stat symtbl returntype returnlabel retvaladdr (Some(endlabel)) (Some(contlabel)) in_switch) in
+												(initasm @ [LABEL(nextlabel)] @ condasm @ [JZ(endlabel)]  @ statasm
+													 @ [LABEL(contlabel)] @ continueasm @ [JUMP(nextlabel);LABEL(endlabel)] ,st1)
 	| ReturnStat(Some(exp)) -> let (a1,t1)=compile_exp exp symtbl in
-							if t1!=returntype then raise (Type_error (t1,returntype))
-							else a1 @ (store_sprel retvaladdr) @ [JUMP(returnlabel)]
-	| ReturnStat(None) -> if returntype <> VoidType then raise (Type_error (returntype,VoidType)) else [JUMP(returnlabel)]
-	| ExpStat(exp) -> let (a,t)=compile_exp exp symtbl in (a @ (if t<>VoidType then [DISCARD] else [])) (*Voidじゃない場合、スタックにゴミが残るからポップ*)
- 	| Block(stats) -> List.concat (List.map (fun s -> compile_stat s symtbl returntype returnlabel retvaladdr breaklabel continuelabel) stats) 
-	| ContinueStat -> (match continuelabel with None -> raise ContinueStat_not_within_loop | Some(lb) ->  [JUMP(lb)])
-	| BreakStat -> (match breaklabel with None -> raise BreakStat_not_within_loop | Some(lb) -> [JUMP(lb)])
-	| PassStat -> []
-	(*|	Label of identifier
-	|	CaseLabel of int_const
-	|	DefaultLabel
-	|	SwitchStat of exp * stat
-	|	GotoStat of identifier*)
-
+							if t1<>returntype then raise (Type_error (t1,returntype))
+							else (match t1 with
+								| StructType(id) -> (match List.assoc id symtbl.tags with StructTag(s,_) ->
+														(a1 @ (rsr_seq s []) @ (ssr_seq retvaladdr s []) @ [JUMP(returnlabel)] ,symtbl) )
+								| UnionType(id) -> (match List.assoc id symtbl.tags with UnionTag(s,_) ->
+														(a1 @ (rsr_seq s []) @ (ssr_seq retvaladdr s []) @ [JUMP(returnlabel)] ,symtbl) )
+								| _ -> (a1 @ (store_sprel retvaladdr) @ [JUMP(returnlabel)] ,symtbl)  )
+	| ReturnStat(None) -> if returntype <> VoidType then raise (Type_error (returntype,VoidType)) else ([JUMP(returnlabel)],symtbl)
+	| ExpStat(exp) -> let (a,t)=compile_exp exp symtbl in
+						let cleaning=match t with
+									| VoidType -> []
+									| StructType(_) -> []
+									| UnionType(_) -> []
+									| _ -> [DISCARD]
+						in ( a @ cleaning ,symtbl) (*Voidじゃない場合、スタックにゴミが残るからポップ*)
+ 	| Block(decls,stats) -> (List.fold_left (fun acc s -> match (acc,s) with ((a_a,a_s),stat) -> 
+				 		match (compile_stat s symtbl returntype returnlabel retvaladdr breaklabel continuelabel in_switch) with
+				 		| (asm,st) -> (a_a @ asm, st)
+				 		) ([],symtbl) stats)
+	| ContinueStat -> (match continuelabel with None -> raise ContinueStat_not_within_loop | Some(lb) ->  ([JUMP(lb)],symtbl))
+	| BreakStat -> (match breaklabel with None -> raise BreakStat_not_within_loop | Some(lb) -> ([JUMP(lb)],symtbl) )
+	| PassStat -> ([],symtbl)
+	| Label(id) -> if (List.mem_assoc id symtbl.labels) then raise Defined_before else let n=get_label () in ([LABEL(n)], {symtbl with labels=(id,n) :: symtbl.labels})
+	| GotoStat(id) -> (try ([JUMP(List.assoc id symtbl.labels)],symtbl) with Not_found -> raise Undefined_label)
+	| CaseLabel(const,stats) -> let (asm,st0)=(List.fold_left (fun acc ele->match acc with (asm_a,st_a) -> (match compile_stat ele st_a returntype returnlabel retvaladdr breaklabel continuelabel in_switch with (s_a,s_s)->(asm_a@s_a,s_s))) ([],symtbl) stats)
+								in let lb=get_label () in
+									if in_switch then ([LABEL(lb)]@asm,{st0 with switchlabels=(Some(const),lb)::st0.switchlabels}) else raise CaseLabel_not_within_switchstat
+	| DefaultLabel(stats) -> let (asm,st0)=(List.fold_left (fun acc ele->match acc with (asm_a,st_a) -> (match compile_stat ele st_a returntype returnlabel retvaladdr breaklabel continuelabel in_switch with (s_a,s_s)->(asm_a@s_a,s_s))) ([],symtbl) stats)
+								in let lb=get_label () in
+									if in_switch then ([LABEL(lb)]@asm,{st0 with switchlabels=(None,lb)::st0.switchlabels}) else raise DefaultLabel_not_within_switchstat
+	| SwitchStat(exp,stat) -> let (exp_a,IntType)=compile_exp exp symtbl
+								and (asm,st0)=compile_stat stat {symtbl with switchlabels=[]} returntype returnlabel retvaladdr breaklabel continuelabel true in
+									(exp_a @ (make_switchasm st0.switchlabels st0)@asm, st0)
+	
+	
 let optlen l=match l with None->1 | Some(v)->v
 
-let make_field_assoc c symtbl=
+let rec unique_ex f lst =
+	match lst with
+	| [] -> true
+	| x :: xs -> if List.exists (fun e -> (f e) = (f x)) xs then false else unique_ex f xs
+
+let make_fieldassoc c symtbl=
+	let get_lastaddr lst= (if lst=[] then 0 else (match List.hd lst with (_,Field(_,_,a)) -> a)) in
 	match c with
-	| StructDef(id,fields) -> (List.fold_left (fun acc ele -> match ele with
-															| FieldDecl(Pointer(StructType(t)),name,len) when t=id ->  (*自身へのポインタは許可*)
-															| FieldDecl(t,name,len) -> 
-												) 0 fields)
-	| UnionDef(id,fields) -> 
-	| EnumDef(id,decls) -> 
+	| StructDef(id,fields) -> let idvarlist= (List.fold_left (fun acc ele -> 
+								let lastaddr = get_lastaddr acc
+								in  
+									match ele with
+									| FieldDecl(Pointer(StructType(t)) as ty,name,len) when t=id (*自身へのポインタは許可*)
+										-> (name,(Field( ty ,lastaddr,lastaddr+(sizeof ty (optlen len) symtbl)))) :: acc
+									| FieldDecl(t,name,len) -> (name,(Field(t,lastaddr,lastaddr+(sizeof t (optlen len) symtbl)))) :: acc
+								) [] fields)
+							in 
+							let size=get_lastaddr idvarlist in
+								(size,idvarlist)
+	| UnionDef(id,fields) -> let idvarlist= (List.fold_left (fun acc ele -> 
+								let lastaddr = 0
+								in 
+									match ele with
+									| FieldDecl(Pointer(UnionType(t)) as ty,name,len) when t=id (*自身へのポインタは許可*)
+										-> (name,(Field( ty ,lastaddr,lastaddr+(sizeof ty (optlen len)  symtbl)))) :: acc
+									| FieldDecl(t,name,len) -> (name,(Field(t,lastaddr,lastaddr+(sizeof t (optlen len)  symtbl)))) :: acc
+								) [] fields)
+							in 
+								let size=List.fold_left (fun acc ele -> match ele with (_,Field(_,s,e)) -> max acc (e-s)) 0 idvarlist
+							in
+								(size,idvarlist)
+								
+let make_enumassoc c symtbl= 
+	match c with 
+	| EnumDef(id,decls) -> List.map (function EnumDecl(name,c)-> (name,EnumerationConst(c))) decls
 
 let rec compile_toplevel x symtbl=
 	match x with
@@ -391,11 +549,18 @@ let rec compile_toplevel x symtbl=
 			and this_label= match (find_env id defined_st) with
 							| Some (ToplevelFunction(ty,lb)) -> lb
 			in
-				(defined_st, [LABEL(this_label)] @ prologue @ (List.concat (List.map (fun s -> compile_stat s  newfun_st t ret_label ((-stext_size)) None None) body)) @ epilogue)
-	| StructDef(id,fields) as s -> if List.mem_assoc id symtbl.tags=true then raise Defined_before
-									else let ({symtbl with tags: (id,StructTag(calc_comptype_size s,make_fieldassoc fields))::symtbl.tags},[])
-	(*| UnionDef of identifier * fielddecl list
-	| EnumDef of identifier * enumdecl list*)
+				(defined_st, [LABEL(this_label)] @ prologue
+				 @ (fst (List.fold_left (fun acc s -> match (acc,s) with ((a_a,a_s),stat) -> 
+				 		(match (compile_stat s  a_s t ret_label ((-stext_size)-(sizeof t 1 a_s)+1) None None false) with
+				 		| (asm,st) -> (a_a @ asm, st)
+				 		)) ([],{newfun_st with labels=[]}) body))
+				 @ epilogue)
+	| StructDef(id,fields) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
+								else (let (s,f)=(make_fieldassoc definition symtbl) in ({symtbl with tags=(id,(StructTag(s,f)))::symtbl.tags},[]))
+	| UnionDef(id,fields) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
+								else (let (s,f)=(make_fieldassoc definition symtbl) in ({symtbl with tags=(id,(UnionTag(s,f)))::symtbl.tags},[]))
+	| EnumDef(id,enums) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
+								else ({symtbl with tags=(id,EnumTag(make_enumassoc definition symtbl))::symtbl.tags},[])
 
 let rec compile ast symtbl asm=
 	match ast with
@@ -408,6 +573,6 @@ let rec compile ast symtbl asm=
 
 let ()=
 	let ast=Myparser.prog Mylexer.token (Lexing.from_channel stdin) in
-		try assemble stdout (compile ast {env=[[]]; tags=[]; labels=[]} [])
-		with Type_error(t1,t2) -> fprintf stderr "Type_error: expected %s but %s\n" (print_type t2) (print_type t1)
+		try assemble stdout (compile ast {env=[[]]; tags=[]; labels=[]; constants=(Hashtbl.create 10); switchlabels=[]} [])
+		with Type_error(t1,t2) as e -> fprintf stderr "Type_error: expected %s but %s\n" (print_type t2) (print_type t1)
 

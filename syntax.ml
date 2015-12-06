@@ -24,6 +24,7 @@ and dcl= GlobalVarDecl of vardecl list | PrototypeDecl of typename * identifier 
 
 and exp=
 	Minus of exp
+|	Plus of exp
 |	Not of exp
 |	Add of exp * exp
 |	Sub of exp * exp
@@ -39,15 +40,8 @@ and exp=
 |	LogicalAnd of exp * exp
 |	LogicalOr of exp * exp
 |	Assign of exp * exp
-|	AssignAdd of exp * exp
-|	AssignSub of exp * exp
-|	AssignMul of exp * exp
-|	AssignDiv of exp * exp
-|	AssignMod of exp * exp
 |	PostIncrement of exp
 |	PostDecrement of exp
-|	PreIncrement of exp
-|	PreDecrement of exp
 |	Indirection of exp
 |	Address of exp
 |	CastExpr of typename * exp
@@ -57,7 +51,6 @@ and exp=
 |	Call of identifier * exp list
 |	ExprSizeof of exp
 |	TypeSizeof of typename
-|	ArrowRef of exp * identifier
 |	FieldRef of exp * identifier
 |	IntConst of int_const
 |	StringConst of string_const
@@ -69,12 +62,12 @@ and stat=
 |	ForStat of exp option * exp option * exp option * stat
 |	ReturnStat of exp option
 |	ExpStat of exp
-|	Block of stat list
+|	Block of vardecl list * stat list
 |	ContinueStat
 |	BreakStat
 |	PassStat
 |	Label of identifier
-|	CaseLabel of int_const
-|	DefaultLabel
+|	CaseLabel of int_const * stat list
+|	DefaultLabel of stat list
 |	SwitchStat of exp * stat
 |	GotoStat of identifier
