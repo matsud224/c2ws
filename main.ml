@@ -300,26 +300,26 @@ and compile_exp x symtbl=
 								(a1 @ [JZ(nextlabel)] @ [PUSH(1);JUMP(margelabel);LABEL(nextlabel)]
 								@ a2 @ [JZ(falselabel);PUSH(1);JUMP(margelabel);LABEL(falselabel);PUSH(0);LABEL(margelabel)], IntType)
 	| Assign(target,exp) -> (let (target_a,Pointer(target_t))=compile_lvalue target symtbl and (exp_a,exp_t)=compile_exp exp symtbl in
+							let rec push_bigdata cnt size=if size>0 then [DUP]@(retrieve_sprel cnt)@[STORE;PUSH(1);ADD]@(push_bigdata (cnt+1) (size-1)) else [] in
 							if target_t<>exp_t then raise (Type_error (target_t,exp_t))
 							else match target_t with
-							| StructType(t) -> (match List.assoc t symtbl.tags with StructTag(ssize,_) ->
-								let rec push_bigdata cnt size=if size>0 then [DUP]@(retrieve_sprel cnt)@[STORE;PUSH(1);ADD]@(push_bigdata (cnt+1) (size-1)) else [] in
-									(exp_a @ target_a @(push_bigdata 1 ssize)@[DISCARD],exp_t) )
+							| StructType(t) -> (match List.assoc t symtbl.tags with StructTag(ssize,_) -> (exp_a @ target_a @(push_bigdata 1 ssize)@[DISCARD],exp_t) )
+							| UnionType(t) -> (match List.assoc t symtbl.tags with UnionTag(ssize,_) ->	(exp_a @ target_a @(push_bigdata 1 ssize)@[DISCARD],exp_t) )
 							| _ -> (exp_a @ [DUP] @ target_a @ [SWAP;STORE],exp_t) )
 	| PostIncrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp symtbl and (texp_a,texp_t)=compile_exp exp symtbl in
 								(texp_a @ [DUP;PUSH(1);ADD] @ target_a @ [SWAP;STORE], target_t)
 	| PostDecrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp symtbl and (texp_a,texp_t)=compile_exp exp symtbl in
 								(texp_a @ [DUP;PUSH(-1);ADD] @ target_a @ [SWAP;STORE], target_t)
-	| VarRef(id) -> (match (find_env id symtbl) with
+	| VarRef(id) -> let rec push_bigdata_static a size=if size>0 then ([PUSH(a+size-1);RETRIEVE])@(store_sprel size)@(push_bigdata_static a (size-1)) else [] in
+					let rec push_bigdata_local a size=if size>0 then (retrieve_sprel (-a+1+size-1))@(store_sprel size)@(push_bigdata_local a (size-1)) else [] in
+					(match (find_env id symtbl) with
 					| Some(StaticVar(Array(t),a)) -> ([PUSH(a)], Pointer(t))
-					| Some(StaticVar(StructType(id) as struct_t,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) ->
-																let rec push_bigdata size=if size>0 then ([PUSH(a+size-1);RETRIEVE])@(store_sprel size)@(push_bigdata (size-1)) else [] in
-																(push_bigdata ssize, struct_t) )
+					| Some(StaticVar(StructType(id) as struct_t,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) -> (push_bigdata_static a ssize, struct_t) )
+					| Some(StaticVar(UnionType(id) as union_t,a)) -> (match List.assoc id symtbl.tags with UnionTag(ssize,_) -> (push_bigdata_static a ssize, union_t) )
 					| Some(StaticVar(t,a)) -> ([PUSH(a); RETRIEVE], t)
 					| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
-					| Some(LocalVar(StructType(id) as struct_t,_,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) ->
-																let rec push_bigdata size=if size>0 then (retrieve_sprel (-a+1+size-1))@(store_sprel size)@(push_bigdata (size-1)) else [] in
-																(push_bigdata ssize,struct_t) )
+					| Some(LocalVar(StructType(id) as struct_t,_,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) -> (push_bigdata_local a ssize,struct_t) )
+					| Some(LocalVar(UnionType(id) as union_t,_,a)) -> (match List.assoc id symtbl.tags with UnionTag(ssize,_) -> (push_bigdata_local a ssize,union_t) )
 					| Some(LocalVar(t,_,a)) -> (retrieve_sprel (-a+1), t)
 					| None -> raise Undefined_variable)
 	| Call("geti",[]) -> ([PUSH(1);ININT;PUSH(1);RETRIEVE], IntType) (*Input系命令は、スタックに格納先のヒープのアドレスをおいておかないといけない*)
@@ -359,12 +359,13 @@ and compile_exp x symtbl=
 	| StringConst(const) -> let addr=get_staticvar ((String.length const)+1) in (Hashtbl.add symtbl.constants addr const);([PUSH(addr)], Pointer(IntType))
 	| ExprSizeof(exp) -> let (exp_a,t)=compile_exp exp symtbl in compile_exp (TypeSizeof(t)) symtbl
 	| TypeSizeof(t) -> ([PUSH(sizeof t 1 symtbl)],IntType)
-	| FieldRef(exp,fieldid) -> let val_load ty= (match ty with (*ロード元アドレスは、スタックトップにある*)
+	| FieldRef(exp,fieldid) -> let val_load ty= let rec push_bigdata size=if size>0 then [DUP;RETRIEVE]@(store_sprel size)@[ADD]@(push_bigdata (size-1)) else [] in
+												(match ty with (*ロード元アドレスは、スタックトップにある*)
 												| Array(t) -> ([], Pointer(t))
 												| StructType(id) as struct_t -> 
-													(match List.assoc id symtbl.tags with StructTag(ssize,_) ->
-														let rec push_bigdata size=if size>0 then [DUP;RETRIEVE]@(store_sprel size)@[ADD]@(push_bigdata (size-1)) else [] in
-															((push_bigdata ssize)@[DISCARD], struct_t) )
+													(match List.assoc id symtbl.tags with StructTag(ssize,_) -> ((push_bigdata ssize)@[DISCARD], struct_t) )
+												| UnionType(id) as union_t -> 
+													(match List.assoc id symtbl.tags with UnionTag(ssize,_) -> ((push_bigdata ssize)@[DISCARD], union_t) )
 												| t -> ([RETRIEVE], t) ) in
 								(try let (exp_a,Pointer(exp_t))=compile_lvalue exp symtbl in
 								match exp_t with
