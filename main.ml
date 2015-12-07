@@ -414,23 +414,24 @@ and compile_exp x symtbl=
 
 
 (*スタックトップに条件式を評価したものがおいてあると仮定*)
-let make_switchasm cases symtbl = 
+let make_switchasm cases eoslb symtbl = 
 	let h=Hashtbl.create 5 in
 		(List.iter (function (value,lb) -> if Hashtbl.mem h value then raise Defined_before else Hashtbl.add h value lb) cases);
+		(if not (Hashtbl.mem h None) then Hashtbl.add h None eoslb);
 	let keys=Hashtbl.fold (fun key value acc -> match key with
 											| None -> acc
 											| Some(k) -> k :: acc
 								) h [] in
-	let sortedkeys=List.sort compare  keys (*昇順*) in
+	let sortedkeys=List.sort compare  keys (*昇順*) in (*fprintf stderr "length:%d\n" (List.length sortedkeys));*)
 	let rec binarysearch_if imin imax skeys=
-		if imin>imax then [LABEL(Hashtbl.find h None)]
+		if imin>imax then [JUMP(Hashtbl.find h None)]
 		else
-			let imid=imin+(imax-imin)/2 and (glabel,eqlabel,endlabel)=(get_label (),get_label (),get_label ()) in
-			[DUP;PUSH(List.nth skeys imid);SUB;JN(glabel);DUP;PUSH(List.nth skeys imid);SUB;JZ(eqlabel)] @ (binarysearch_if imin (imid-1) skeys) @ [JUMP(endlabel)]
-			@ [LABEL(glabel)] @ (binarysearch_if (imid+1) imax skeys) @ [JUMP(endlabel)]
-			@ [LABEL(eqlabel)] @ [DISCARD;LABEL(Hashtbl.find h (Some(imid)))] @ [LABEL(endlabel)]
+			let imid=imin+(imax-imin)/2 and (glabel,eqlabel,endlabel)=(get_label (),get_label (),get_label ()) in (*fprintf stderr "imin:%d imax:%d imid:%d\n" imin imax imid);*)
+			[DUP;PUSH(List.nth skeys imid);SUB;JN(glabel);DUP;PUSH(List.nth skeys imid);SUB;JZ(eqlabel)] @ (binarysearch_if (imid+1) imax skeys) @ [JUMP(endlabel)]
+			@ [LABEL(glabel)] @ (binarysearch_if imin (imid-1) skeys) @ [JUMP(endlabel)]
+			@ [LABEL(eqlabel)] @ [DISCARD;JUMP(Hashtbl.find h (Some(List.nth skeys imid)))] @ [LABEL(endlabel)]
 	in
-		binarysearch_if 0 (List.length keys) sortedkeys
+		binarysearch_if 0 ((List.length keys)-1) sortedkeys
 
 
 let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相対位置*) breaklabel continuelabel (*共にoption*) in_switch=
@@ -494,7 +495,7 @@ let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相�
 									if in_switch then ([LABEL(lb)]@asm,{st0 with switchlabels=(None,lb)::st0.switchlabels}) else raise DefaultLabel_not_within_switchstat
 	| SwitchStat(exp,stat) -> let (exp_a,IntType)=compile_exp exp symtbl and endofswitchlb=get_label () in
 								let (asm,st0)=compile_stat stat {symtbl with switchlabels=[]} returntype returnlabel retvaladdr (Some(endofswitchlb)) continuelabel true in
-									(exp_a @ (make_switchasm st0.switchlabels st0)@asm@[LABEL(endofswitchlb)], st0)
+									(exp_a @ (make_switchasm st0.switchlabels endofswitchlb st0)@asm@[LABEL(endofswitchlb)], st0)
 	
 	
 let optlen l=match l with None->1 | Some(v)->v
