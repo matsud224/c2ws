@@ -261,17 +261,17 @@ and compile_exp x symtbl=
 	| Minus(exp) -> let (a1,IntType)=compile_exp exp symtbl in (a1 @ [PUSH(-1);MUL],IntType)
 	| Not(exp) -> let (a1,IntType)=compile_exp exp symtbl and (zlabel,margelabel)=(get_label (),get_label ()) in
 					(a1 @ [JZ(zlabel);PUSH(0);JUMP(margelabel);LABEL(zlabel);PUSH(1);LABEL(margelabel)], IntType)
-	| Add(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl  in let asm=a1 @ a2 @ [ADD] in
+	| Add(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl in
 							match (t1,t2) with
-							| (IntType,IntType) -> (asm,IntType)
-							| (Pointer(t),IntType) -> (asm,Pointer(t))
-							| (IntType,Pointer(t)) -> (asm,Pointer(t))
+							| (IntType,IntType) -> (a1 @ a2 @ [ADD],IntType)
+							| (Pointer(t),IntType) -> (a1 @ a2 @ [PUSH(sizeof t 1 symtbl);MUL;ADD],Pointer(t))
+							| (IntType,Pointer(t)) -> (a1 @ [PUSH(sizeof t 1 symtbl);MUL] @ a2 @ [ADD],Pointer(t))
 							| _ -> raise (Type_error (t1,t2)))
-	| Sub(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl  in let asm=a1 @ a2 @ [SUB] in
+	| Sub(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl in
 							match (t1,t2) with
-							| (IntType,IntType) -> (asm,IntType)
-							| (Pointer(t),IntType) -> (asm,Pointer(t))
-							| (Pointer(pt1),Pointer(pt2)) when pt1=pt2 -> (asm,IntType)
+							| (IntType,IntType) -> (a1 @ a2 @ [SUB] ,IntType)
+							| (Pointer(t),IntType) -> (a1 @ a2 @ [PUSH(sizeof t 1 symtbl);MUL;SUB] ,Pointer(t))
+							| (Pointer(pt1),Pointer(pt2)) when pt1=pt2 -> (a1 @ a2 @ [SUB] ,IntType)
 							| _ -> raise (Type_error (t1,t2)))
 	| Mul(exp1,exp2) -> (let (a1,t1)=compile_exp exp1 symtbl and (a2,t2)=compile_exp exp2 symtbl  in let asm=a1 @ a2 @ [MUL] in
 							match (t1,t2) with
@@ -315,10 +315,10 @@ and compile_exp x symtbl=
 							| StructType(t) -> (match List.assoc t symtbl.tags with StructTag(ssize,_) -> (exp_a @ target_a @(push_bigdata 1 ssize)@[DISCARD],exp_t) )
 							| UnionType(t) -> (match List.assoc t symtbl.tags with UnionTag(ssize,_) ->	(exp_a @ target_a @(push_bigdata 1 ssize)@[DISCARD],exp_t) )
 							| _ -> (exp_a @ [DUP] @ target_a @ [SWAP;STORE],exp_t) )
-	| PostIncrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp symtbl and (texp_a,texp_t)=compile_exp exp symtbl in
-								(texp_a @ [DUP;PUSH(1);ADD] @ target_a @ [SWAP;STORE], target_t)
-	| PostDecrement(exp) -> let (target_a,Pointer(target_t))=compile_lvalue exp symtbl and (texp_a,texp_t)=compile_exp exp symtbl in
-								(texp_a @ [DUP;PUSH(-1);ADD] @ target_a @ [SWAP;STORE], target_t)
+	| PostIncrement(exp) -> let (texp_a,texp_t)=compile_exp exp symtbl and (assg_a,_)=compile_exp (Assign(exp,Add(exp,IntConst(1)))) symtbl in
+								(texp_a @ assg_a @ [DISCARD], texp_t)
+	| PostDecrement(exp) -> let (texp_a,texp_t)=compile_exp exp symtbl and (assg_a,_)=compile_exp (Assign(exp,Sub(exp,IntConst(1)))) symtbl in
+								(texp_a @ assg_a @ [DISCARD], texp_t)
 	| VarRef(id) -> let rec push_bigdata_static a size=if size>0 then ([PUSH(a+size-1);RETRIEVE])@(store_sprel size)@(push_bigdata_static a (size-1)) else [] in
 					let rec push_bigdata_local a size=if size>0 then (retrieve_sprel (-a+1+size-1))@(store_sprel size)@(push_bigdata_local a (size-1)) else [] in
 					(match (find_env id symtbl) with
@@ -492,9 +492,9 @@ let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相�
 	| DefaultLabel(stats) -> let (asm,st0)=(List.fold_left (fun acc ele->match acc with (asm_a,st_a) -> (match compile_stat ele st_a returntype returnlabel retvaladdr breaklabel continuelabel in_switch with (s_a,s_s)->(asm_a@s_a,s_s))) ([],symtbl) stats)
 								in let lb=get_label () in
 									if in_switch then ([LABEL(lb)]@asm,{st0 with switchlabels=(None,lb)::st0.switchlabels}) else raise DefaultLabel_not_within_switchstat
-	| SwitchStat(exp,stat) -> let (exp_a,IntType)=compile_exp exp symtbl
-								and (asm,st0)=compile_stat stat {symtbl with switchlabels=[]} returntype returnlabel retvaladdr breaklabel continuelabel true in
-									(exp_a @ (make_switchasm st0.switchlabels st0)@asm, st0)
+	| SwitchStat(exp,stat) -> let (exp_a,IntType)=compile_exp exp symtbl and endofswitchlb=get_label () in
+								let (asm,st0)=compile_stat stat {symtbl with switchlabels=[]} returntype returnlabel retvaladdr (Some(endofswitchlb)) continuelabel true in
+									(exp_a @ (make_switchasm st0.switchlabels st0)@asm@[LABEL(endofswitchlb)], st0)
 	
 	
 let optlen l=match l with None->1 | Some(v)->v
@@ -544,7 +544,7 @@ let rec compile_toplevel x symtbl=
 	match x with
 	| GlobalVarDecl(decllist) -> 
 		(List.fold_left (fun acc decl -> match (acc,decl) with
-										| ((acc_st,acc_asm), VarDecl(t,id,len,init)) -> addstaticvar id t (optlen len) acc_st init acc_asm
+										| ((acc_st,acc_asm), VarDecl(t,modifiers,id,len,init)) -> addstaticvar id t (optlen len) acc_st init acc_asm
 						 ) (symtbl,[]) decllist)
 	| PrototypeDecl(t,id,params) ->
 		((addtoplevelfun id (Func(t, List.map (function Parameter(ty,_) -> ty) params)) symtbl), [])
@@ -555,7 +555,9 @@ let rec compile_toplevel x symtbl=
 						| _ -> addtoplevelfun id functype symtbl
 		in
 			let (localdef_st,localdef_asm)=(List.fold_left (fun acc decl -> match (acc,decl) with 
-															| ((acc_st,acc_asm), VarDecl(t,id,len,init)) -> addlocalvar id t (optlen len) acc_st init acc_asm
+															| ((acc_st,acc_asm), VarDecl(t,modifiers,id,len,init))
+																-> if List.mem StaticMod modifiers then addstaticvar id t (optlen len) acc_st init acc_asm
+																	else addlocalvar id t (optlen len) acc_st init acc_asm
 											) (defined_st,[]) vardecl) in			
 			let newfun_st=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> let (e,a)=addlocalvar id ty 1 acc None [] in e) 
 																						{localdef_st with env=[] :: localdef_st.env} params in

@@ -2,6 +2,7 @@ type identifier = string
 type int_const = int
 type string_const = string
 
+type modifier = StaticMod
 
 type typename = IntType | VoidType | Array of typename | Pointer of typename
 				| Func of typename * typename list
@@ -11,7 +12,7 @@ type typename = IntType | VoidType | Array of typename | Pointer of typename
 
 and parm= Parameter of typename * identifier
 and init_value = InitExp of exp | InitArray of init_value list
-and vardecl = VarDecl of typename *  identifier * int_const  option * init_value option
+and vardecl = VarDecl of  typename * modifier list *  identifier * int_const  option * init_value option
 and fielddecl = FieldDecl of typename * identifier * int_const option
 and enumdecl= EnumDecl of identifier * int_const
 

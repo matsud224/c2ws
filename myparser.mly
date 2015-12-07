@@ -4,11 +4,12 @@ open Syntax
 
 
 let rec ptr_wrap t depth = if depth=0 then t else ptr_wrap (Pointer(t)) (depth-1)
-let rec make_vardecllist basetype children lst = 
+
+let rec make_vardecllist basetype modifiers children lst = 
 	match children with
 	| [] -> lst
-	| (id,ptrdep,None,init) :: rest -> (make_vardecllist basetype rest (lst @ [(VarDecl(ptr_wrap basetype ptrdep,id,None,init))]))
-	| (id,ptrdep,Some(len),init) :: rest -> (make_vardecllist basetype rest (lst @ [(VarDecl(ptr_wrap (Array(basetype)) ptrdep,id,Some(len),init))]))
+	| (id,ptrdep,None,init) :: rest -> (make_vardecllist basetype modifiers rest (lst @ [(VarDecl(ptr_wrap basetype ptrdep,modifiers,id,None,init))]))
+	| (id,ptrdep,Some(len),init) :: rest -> (make_vardecllist basetype modifiers rest (lst @ [(VarDecl(ptr_wrap (Array(basetype)) ptrdep,modifiers,id,Some(len),init))]))
 											
 let rec make_fielddecllist basetype children lst = 
 	match children with
@@ -232,7 +233,9 @@ var_decl_list:
 
 	{ [] }
 |	simple_typename var_decl var_decl_additional SEMICOLON var_decl_list
-	{ (make_vardecllist $1 ($2 :: $3) []) @ $5 }
+	{ (make_vardecllist $1 [] ($2 :: $3) []) @ $5 }
+|	STATIC simple_typename var_decl var_decl_additional SEMICOLON var_decl_list
+	{ (make_vardecllist $2 [StaticMod] ($3 :: $4) []) @ $6 }
 	
 field_decl_list:
 
