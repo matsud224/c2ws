@@ -146,7 +146,7 @@ let get_label ()=
 	_label := !_label + 1;
 	!_label
 
-let _stvar=ref 2 (*0はSPに、1はInput時の一時格納先として使われている*)
+let _stvar=ref 3 (*0はSPに、1はInput時の一時格納先に、2は戻り値保管先アドレス格納用として使われている*)
 let get_staticvar size=
 	let temp = !_stvar in
 		_stvar := !_stvar+size; temp
@@ -354,13 +354,15 @@ and compile_exp x symtbl=
 																	| (a,_,s) :: rest -> argpush_asmgen rest (asm @ a)
 									and
 										total_argsize=List.fold_left (fun acc ele -> match ele with (_,_,s) -> acc+s) 0 asts
-									and
-										to_opstack=match rett with
+									and to_opstack=match rett with
 													| StructType(_) | UnionType(_) -> []
-													| _ -> (rsr_seq (sizeof rett 1 symtbl) [])
+													| _ -> get_sp @ [PUSH(1);ADD;RETRIEVE]
 									in
-										((argpush_asmgen (asts) []) @ (sp_add (sizeof rett 1 symtbl)) @ (ssr_seq 1 total_argsize [])
-											@ [CALL(label)] @ (sp_add (-(sizeof rett 1 symtbl))) @ to_opstack , rett)
+										((argpush_asmgen (asts) [])
+										@ (sp_add (sizeof rett 1 symtbl)) @ (ssr_seq 1 total_argsize [])
+										@ [PUSH(2);RETRIEVE;PUSH(0);RETRIEVE;PUSH((sizeof rett 1 symtbl)-1);SUB;PUSH(2);SWAP;STORE](*retvaladdr(2番地)を退避/更新*)
+										@ [CALL(label)] @ (sp_add (-(sizeof rett 1 symtbl))) @ to_opstack
+										@ [SWAP;PUSH(2);SWAP;STORE] (*復元*), rett)
 							| _ -> raise Undefined_function)
 	| Address(exp) -> compile_lvalue exp symtbl
 	| Indirection(exp) -> let (exp_a,Pointer(t))=compile_exp exp symtbl in (exp_a @ [RETRIEVE],t)
@@ -452,24 +454,37 @@ let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相�
 	| ForStat(init, cond, continue, stat) -> let (nextlabel,contlabel,endlabel)=(get_label (),get_label (),get_label ()) in 
 											let initasm=match init with
 														| None -> []
-														| Some(exp) -> let (a,t)=compile_exp exp symtbl in (a @ (if t <> VoidType then [DISCARD] else []))
+														| Some(exp) -> let (a,t)=compile_exp exp symtbl in let cleaning=match t with
+																									| VoidType -> []
+																									| StructType(_) -> []
+																									| UnionType(_) -> []
+																									| _ -> [DISCARD]
+																		in (a @ cleaning)
 											and condasm=match cond with
 														| None -> [PUSH(1)]
 														| Some(exp) -> let (a,t)=compile_exp exp symtbl in if t <> IntType then raise (Type_error (t,IntType)) else a
 											and continueasm=match continue with
 															| None -> []
-															| Some(exp) -> let (a,t)=compile_exp exp symtbl in (a @ (if t <> VoidType then [DISCARD] else []))
+															| Some(exp) -> let (a,t)=compile_exp exp symtbl in let cleaning=match t with
+																										| VoidType -> []
+																										| StructType(_) -> []
+																										| UnionType(_) -> []
+																										| _ -> [DISCARD]
+																										in (a @ cleaning)
 											and (statasm,st1)=(compile_stat stat symtbl returntype returnlabel retvaladdr (Some(endlabel)) (Some(contlabel)) in_switch) in
 												(initasm @ [LABEL(nextlabel)] @ condasm @ [JZ(endlabel)]  @ statasm
 													 @ [LABEL(contlabel)] @ continueasm @ [JUMP(nextlabel);LABEL(endlabel)] ,st1)
 	| ReturnStat(Some(exp)) -> let (a1,t1)=compile_exp exp symtbl in
+							let rec ssr_seq2 times asm=
+								if times=0 then asm else ssr_seq2 (times-1) ([PUSH(2);RETRIEVE;PUSH(times-1);ADD;SWAP;STORE] @ asm) 
+							in
 							if t1<>returntype then raise (Type_error (t1,returntype))
 							else (match t1 with
 								| StructType(id) -> (match List.assoc id symtbl.tags with StructTag(s,_) ->
-														(a1 @ (rsr_seq s []) @ (ssr_seq retvaladdr s []) @ [JUMP(returnlabel)] ,symtbl) )
+														(a1 @ (rsr_seq s []) @ (ssr_seq2 s []) @ [JUMP(returnlabel)] ,symtbl) )
 								| UnionType(id) -> (match List.assoc id symtbl.tags with UnionTag(s,_) ->
-														(a1 @ (rsr_seq s []) @ (ssr_seq retvaladdr s []) @ [JUMP(returnlabel)] ,symtbl) )
-								| _ -> (a1 @ (store_sprel retvaladdr) @ [JUMP(returnlabel)] ,symtbl)  )
+														(a1 @ (rsr_seq s []) @ (ssr_seq2 s []) @ [JUMP(returnlabel)] ,symtbl) )
+								| _ -> (a1 @ [PUSH(2);RETRIEVE;SWAP;STORE;JUMP(returnlabel)] ,symtbl)  )
 	| ReturnStat(None) -> if returntype <> VoidType then raise (Type_error (returntype,VoidType)) else ([JUMP(returnlabel)],symtbl)
 	| ExpStat(exp) -> let (a,t)=compile_exp exp symtbl in
 						let cleaning=match t with
@@ -585,7 +600,7 @@ let rec compile ast symtbl asm=
 	match ast with
 	| [] -> (match (find_flame "main" (List.hd (List.rev symtbl.env))) with
 						| None ->  raise Notfound_main
-						| Some(ToplevelFunction(t,lb)) -> [PUSH(0);PUSH(get_staticvar 1(*静的変数領域の次からスタック領域*));STORE;CALL(lb);END] @ asm )
+						| Some(ToplevelFunction(t,lb)) -> [PUSH(0);PUSH(get_staticvar 1(*静的変数領域の次からスタック領域*));STORE;PUSH(2);PUSH(1);STORE(*2番地に適当な値を入れておく*);CALL(lb);END] @ asm )
 	| x :: xs -> match (compile_toplevel x symtbl) with
 				| (newenv,newasm) -> compile xs newenv (asm @ newasm)
 

@@ -101,8 +101,8 @@ let rec make_enumdecllist children index lst =
 prog:
 	EOF
 	{ [] }
-|	dcl SEMICOLON prog
-	{ $1 :: $3 }
+|	dcl prog
+	{ $1 :: $2 }
 |	func prog
 	{ $1 :: $2 }
 |	structure prog
@@ -113,10 +113,11 @@ prog:
 	{ $1 :: $2 }
 	
 dcl:
-	var_decl_list
-	{ GlobalVarDecl($1) }
-|	simple_typename some_asterisk Id LPAREN parm_list RPAREN
+	simple_typename some_asterisk Id LPAREN parm_list RPAREN SEMICOLON
 	{ PrototypeDecl(ptr_wrap $1 $2,$3,$5) }
+|	simple_typename var_decl var_decl_additional SEMICOLON
+	{ GlobalVarDecl(make_vardecllist $1 [] ($2 :: $3) []) }
+
 
 some_asterisk:
 	
@@ -186,15 +187,15 @@ enum_decl_list:
 	{ make_enumdecllist ($1 :: $2) 0 [] }
 	
 structure:
-	STRUCT Id LBRACE field_decl_list RBRACE
+	STRUCT Id LBRACE field_decl_list RBRACE SEMICOLON
 	{ StructDef($2,$4) }
 	
 union:
-	UNION Id LBRACE field_decl_list RBRACE
+	UNION Id LBRACE field_decl_list RBRACE SEMICOLON
 	{ UnionDef($2,$4) }
 
 enum:
-	ENUM Id LBRACE enum_decl_list RBRACE
+	ENUM Id LBRACE enum_decl_list RBRACE SEMICOLON
 	{ EnumDef($2,$4) }
 
 simple_typename:
