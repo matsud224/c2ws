@@ -360,7 +360,7 @@ and compile_exp x symtbl=
 													| _ -> (rsr_seq (sizeof rett 1 symtbl) [])
 									in
 										((argpush_asmgen (asts) []) @ (sp_add (sizeof rett 1 symtbl)) @ (ssr_seq 1 total_argsize [])
-											@ [CALL(label)] @ to_opstack @ (sp_add (-(sizeof rett 1 symtbl))) , rett)
+											@ [CALL(label)] @ (sp_add (-(sizeof rett 1 symtbl))) @ to_opstack , rett)
 							| _ -> raise Undefined_function)
 	| Address(exp) -> compile_lvalue exp symtbl
 	| Indirection(exp) -> let (exp_a,Pointer(t))=compile_exp exp symtbl in (exp_a @ [RETRIEVE],t)
