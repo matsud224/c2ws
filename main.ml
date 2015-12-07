@@ -356,13 +356,13 @@ and compile_exp x symtbl=
 										total_argsize=List.fold_left (fun acc ele -> match ele with (_,_,s) -> acc+s) 0 asts
 									and to_opstack=match rett with
 													| StructType(_) | UnionType(_) -> []
-													| _ -> get_sp @ [PUSH(1);ADD;RETRIEVE]
+													| _ -> get_sp @ [PUSH(1);ADD;RETRIEVE;SWAP] (*このSWAP：返り値がスタックトップに、その下に２番地の値が入ってるので、逆転する必要あり*)
 									in
 										((argpush_asmgen (asts) [])
 										@ (sp_add (sizeof rett 1 symtbl)) @ (ssr_seq 1 total_argsize [])
 										@ [PUSH(2);RETRIEVE;PUSH(0);RETRIEVE;PUSH((sizeof rett 1 symtbl)-1);SUB;PUSH(2);SWAP;STORE](*retvaladdr(2番地)を退避/更新*)
 										@ [CALL(label)] @ (sp_add (-(sizeof rett 1 symtbl))) @ to_opstack
-										@ [SWAP;PUSH(2);SWAP;STORE] (*復元*), rett)
+										@ [PUSH(2);SWAP;STORE] (*復元*), rett)
 							| _ -> raise Undefined_function)
 	| Address(exp) -> compile_lvalue exp symtbl
 	| Indirection(exp) -> let (exp_a,Pointer(t))=compile_exp exp symtbl in (exp_a @ [RETRIEVE],t)
