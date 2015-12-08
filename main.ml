@@ -158,6 +158,7 @@ type 'a symtable={
 	labels: (identifier * int) list;
 	constants: 'a; 
 	switchlabels: (int option * int) list; (*Noneの場合はdefaultを表す*)
+	localoffset: int;
 }
 
 let rec sizeof t len symtbl=
@@ -197,8 +198,8 @@ let addstaticvar id t len symtbl init before_asm=
 let addlocalvar id t len symtbl init before_asm=
 	let x=List.hd symtbl.env in
 		match (find_flame id x) with
-		| None -> let last_addr=last_localaddr symtbl in 
-			( { symtbl with env=((id,LocalVar(t,last_addr,last_addr+(sizeof t len symtbl))) :: x) :: symtbl.env } , before_asm @ [] )
+		| None -> let last_addr=symtbl.localoffset in
+			( { symtbl with env=((id,LocalVar(t,last_addr,last_addr+(sizeof t len symtbl))) :: x) :: symtbl.env; localoffset=symtbl.localoffset+(sizeof t len symtbl)} , before_asm @ [] )
 		| Some(_)  -> raise Defined_before
 
 let addtoplevelfun id t symtbl=
@@ -415,6 +416,9 @@ and compile_exp x symtbl=
 								else (cond_a @ [JZ(elselabel)] @ tp_a @ [JUMP(endiflabel)] @ [LABEL(elselabel)] @ fp_a @ [LABEL(endiflabel)], tp_t)
 
 
+
+let optlen l=match l with None->1 | Some(v)->v
+
 (*スタックトップに条件式を評価したものがおいてあると仮定*)
 let make_switchasm cases eoslb symtbl = 
 	let h=Hashtbl.create 5 in
@@ -436,20 +440,20 @@ let make_switchasm cases eoslb symtbl =
 		binarysearch_if 0 ((List.length keys)-1) sortedkeys
 
 
-let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相対位置*) breaklabel continuelabel (*共にoption*) in_switch=
+let rec compile_stat x symtbl returntype returnlabel breaklabel continuelabel (*共にoption*) in_switch=
 	match x with
 	| IfStat(cond,cons,alt) -> let (cond_a,IntType)=compile_exp cond symtbl
-								and (cons_a,st1)=(compile_stat cons symtbl returntype returnlabel retvaladdr breaklabel continuelabel in_switch) in
-								let (alt_a,st2)=(compile_stat alt st1 returntype returnlabel retvaladdr breaklabel continuelabel in_switch) in
+								and (cons_a,st1)=(compile_stat cons symtbl returntype returnlabel breaklabel continuelabel in_switch) in
+								let (alt_a,st2)=(compile_stat alt st1 returntype returnlabel breaklabel continuelabel in_switch) in
 								let elselabel=get_label () and endiflabel=get_label () in 
 										(cond_a @ [JZ(elselabel)] @ cons_a @ [JUMP(endiflabel)] @ [LABEL(elselabel)] @ alt_a @ [LABEL(endiflabel)] ,st2)
 	| WhileStat(cond, stat) -> let beginlabel=get_label () and endlabel=get_label () in
 								let (cond_a,IntType)=compile_exp cond  symtbl
-								and (stat_a,st1)=(compile_stat stat  symtbl returntype returnlabel retvaladdr (Some(endlabel)) continuelabel in_switch) in
+								and (stat_a,st1)=(compile_stat stat  symtbl returntype returnlabel (Some(endlabel)) continuelabel in_switch) in
 										([LABEL(beginlabel)] @ cond_a @ [JZ(endlabel)] @ stat_a @ [JUMP(beginlabel); LABEL(endlabel)] ,st1)
 	| DoStat(cond, stat) -> let beginlabel=get_label () and endlabel=get_label () in
 								let (cond_a,IntType)=compile_exp cond  symtbl
-								and (stat_a,st1)=(compile_stat stat  symtbl returntype returnlabel retvaladdr (Some(endlabel)) continuelabel in_switch) in
+								and (stat_a,st1)=(compile_stat stat  symtbl returntype returnlabel (Some(endlabel)) continuelabel in_switch) in
 										([LABEL(beginlabel)] @ stat_a @ cond_a @ [JZ(endlabel); JUMP(beginlabel); LABEL(endlabel)] ,st1)
 	| ForStat(init, cond, continue, stat) -> let (nextlabel,contlabel,endlabel)=(get_label (),get_label (),get_label ()) in 
 											let initasm=match init with
@@ -471,7 +475,7 @@ let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相�
 																										| UnionType(_) -> []
 																										| _ -> [DISCARD]
 																										in (a @ cleaning)
-											and (statasm,st1)=(compile_stat stat symtbl returntype returnlabel retvaladdr (Some(endlabel)) (Some(contlabel)) in_switch) in
+											and (statasm,st1)=(compile_stat stat symtbl returntype returnlabel (Some(endlabel)) (Some(contlabel)) in_switch) in
 												(initasm @ [LABEL(nextlabel)] @ condasm @ [JZ(endlabel)]  @ statasm
 													 @ [LABEL(contlabel)] @ continueasm @ [JUMP(nextlabel);LABEL(endlabel)] ,st1)
 	| ReturnStat(Some(exp)) -> let (a1,t1)=compile_exp exp symtbl in
@@ -493,27 +497,35 @@ let rec compile_stat x symtbl returntype returnlabel retvaladdr(*SPからの相�
 									| UnionType(_) -> []
 									| _ -> [DISCARD]
 						in ( a @ cleaning ,symtbl) (*Voidじゃない場合、スタックにゴミが残るからポップ*)
- 	| Block(decls,stats) -> (List.fold_left (fun acc s -> match (acc,s) with ((a_a,a_s),stat) -> 
-				 		match (compile_stat s symtbl returntype returnlabel retvaladdr breaklabel continuelabel in_switch) with
-				 		| (asm,st) -> (a_a @ asm, st)
-				 		) ([],symtbl) stats)
+ 	| Block(decls,stats) -> let (localdef_st,localdef_asm)=
+ 								(List.fold_left (fun acc decl -> match (acc,decl) with 
+																| ((acc_st,acc_asm), VarDecl(t,modifiers,id,len,init))
+																	-> if List.mem StaticMod modifiers then addstaticvar id t (optlen len) acc_st init acc_asm
+																		else addlocalvar id t (optlen len) acc_st init acc_asm
+									) ({symtbl with env=[] :: symtbl.env},[]) decls)
+							in
+								let (code,finalst)=(List.fold_left (fun acc s -> match (acc,s) with ((a_a,a_s),stat) -> 
+				 					match (compile_stat stat a_s returntype returnlabel breaklabel continuelabel in_switch) with
+				 					| (asm,st) -> (a_a @ asm, st)
+						 		) ([],localdef_st) stats)
+						 	in
+						 		(code,{finalst with env=(List.tl finalst.env)})
 	| ContinueStat -> (match continuelabel with None -> raise ContinueStat_not_within_loop | Some(lb) ->  ([JUMP(lb)],symtbl))
 	| BreakStat -> (match breaklabel with None -> raise BreakStat_not_within_loop | Some(lb) -> ([JUMP(lb)],symtbl) )
 	| PassStat -> ([],symtbl)
 	| Label(id) -> if (List.mem_assoc id symtbl.labels) then raise Defined_before else let n=get_label () in ([LABEL(n)], {symtbl with labels=(id,n) :: symtbl.labels})
 	| GotoStat(id) -> (try ([JUMP(List.assoc id symtbl.labels)],symtbl) with Not_found -> raise Undefined_label)
-	| CaseLabel(const,stats) -> let (asm,st0)=(List.fold_left (fun acc ele->match acc with (asm_a,st_a) -> (match compile_stat ele st_a returntype returnlabel retvaladdr breaklabel continuelabel in_switch with (s_a,s_s)->(asm_a@s_a,s_s))) ([],symtbl) stats)
+	| CaseLabel(const,stats) -> let (asm,st0)=(List.fold_left (fun acc ele->match acc with (asm_a,st_a) -> (match compile_stat ele st_a returntype returnlabel breaklabel continuelabel in_switch with (s_a,s_s)->(asm_a@s_a,s_s))) ([],symtbl) stats)
 								in let lb=get_label () in
 									if in_switch then ([LABEL(lb)]@asm,{st0 with switchlabels=(Some(const),lb)::st0.switchlabels}) else raise CaseLabel_not_within_switchstat
-	| DefaultLabel(stats) -> let (asm,st0)=(List.fold_left (fun acc ele->match acc with (asm_a,st_a) -> (match compile_stat ele st_a returntype returnlabel retvaladdr breaklabel continuelabel in_switch with (s_a,s_s)->(asm_a@s_a,s_s))) ([],symtbl) stats)
+	| DefaultLabel(stats) -> let (asm,st0)=(List.fold_left (fun acc ele->match acc with (asm_a,st_a) -> (match compile_stat ele st_a returntype returnlabel breaklabel continuelabel in_switch with (s_a,s_s)->(asm_a@s_a,s_s))) ([],symtbl) stats)
 								in let lb=get_label () in
 									if in_switch then ([LABEL(lb)]@asm,{st0 with switchlabels=(None,lb)::st0.switchlabels}) else raise DefaultLabel_not_within_switchstat
 	| SwitchStat(exp,stat) -> let (exp_a,IntType)=compile_exp exp symtbl and endofswitchlb=get_label () in
-								let (asm,st0)=compile_stat stat {symtbl with switchlabels=[]} returntype returnlabel retvaladdr (Some(endofswitchlb)) continuelabel true in
+								let (asm,st0)=compile_stat stat {symtbl with switchlabels=[]} returntype returnlabel (Some(endofswitchlb)) continuelabel true in
 									(exp_a @ (make_switchasm st0.switchlabels endofswitchlb st0)@asm@[LABEL(endofswitchlb)], st0)
 	
 	
-let optlen l=match l with None->1 | Some(v)->v
 
 let rec unique_ex f lst =
 	match lst with
@@ -574,21 +586,18 @@ let rec compile_toplevel x symtbl=
 															| ((acc_st,acc_asm), VarDecl(t,modifiers,id,len,init))
 																-> if List.mem StaticMod modifiers then addstaticvar id t (optlen len) acc_st init acc_asm
 																	else addlocalvar id t (optlen len) acc_st init acc_asm
-											) (defined_st,[]) vardecl) in			
-			let newfun_st=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> let (e,a)=addlocalvar id ty 1 acc None [] in e) 
-																						{localdef_st with env=[] :: localdef_st.env} params in
-			let stext_size=(last_localaddr newfun_st)
+											) ({defined_st with env=[]::defined_st.env;localoffset=0},[]) vardecl) in			
+			let newfun_st=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> let (e,a)=addlocalvar id ty 1 acc None [] in e) localdef_st params
 			and ret_label=get_label () in
-			let prologue=(sp_add stext_size) @ localdef_asm and epilogue= [LABEL(ret_label)] @ (sp_add (-stext_size)) @ [RETURN]
+			let (code,finalst)=(List.fold_left (fun acc s -> match (acc,s) with ((a_a,a_s),stat) -> 
+				 		(match (compile_stat s  a_s t ret_label None None false) with
+				 		| (asm,st) -> (a_a @ asm, st)
+				 		)) ([],{newfun_st with labels=[]}) body) in
+			let prologue=(sp_add (finalst.localoffset)) @ localdef_asm and epilogue= [LABEL(ret_label)] @ (sp_add (-(finalst.localoffset))) @ [RETURN]
 			and this_label= match (find_env id defined_st) with
 							| Some (ToplevelFunction(ty,lb)) -> lb
 			in
-				(defined_st, [LABEL(this_label)] @ prologue
-				 @ (fst (List.fold_left (fun acc s -> match (acc,s) with ((a_a,a_s),stat) -> 
-				 		(match (compile_stat s  a_s t ret_label ((-stext_size)-(sizeof t 1 a_s)+1) None None false) with
-				 		| (asm,st) -> (a_a @ asm, st)
-				 		)) ([],{newfun_st with labels=[]}) body))
-				 @ epilogue)
+				(defined_st, [LABEL(this_label)] @ prologue @ code @ epilogue)
 	| StructDef(id,fields) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
 								else (let (s,f)=(make_fieldassoc definition symtbl) in ({symtbl with tags=(id,(StructTag(s,f)))::symtbl.tags},[]))
 	| UnionDef(id,fields) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
@@ -607,6 +616,6 @@ let rec compile ast symtbl asm=
 
 let ()=
 	let ast=Myparser.prog Mylexer.token (Lexing.from_channel stdin) in
-		try assemble stdout (compile ast {env=[[]]; tags=[]; labels=[]; constants=(Hashtbl.create 10); switchlabels=[]} [])
+		try assemble stdout (compile ast {env=[[]]; tags=[]; labels=[]; constants=(Hashtbl.create 10); switchlabels=[];localoffset=0} [])
 		with Type_error(t1,t2) as e -> fprintf stderr "Type_error: expected %s but %s\n" (print_type t2) (print_type t1)
 
