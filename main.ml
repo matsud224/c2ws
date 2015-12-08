@@ -198,8 +198,8 @@ let addstaticvar id t len symtbl init before_asm=
 let addlocalvar id t len symtbl init before_asm=
 	let x=List.hd symtbl.env in
 		match (find_flame id x) with
-		| None -> let last_addr=symtbl.localoffset in
-			( { symtbl with env=((id,LocalVar(t,last_addr,last_addr+(sizeof t len symtbl))) :: x) :: symtbl.env; localoffset=symtbl.localoffset+(sizeof t len symtbl)} , before_asm @ [] )
+		| None -> let last_addr=symtbl.localoffset in (*fprintf stderr "%s : %d~%d\n" id last_addr (last_addr+(sizeof t len symtbl)));*)
+			( { symtbl with env=((id,LocalVar(t,last_addr,last_addr+(sizeof t len symtbl))) :: x) :: (List.tl symtbl.env); localoffset=symtbl.localoffset+(sizeof t len symtbl)} , before_asm @ [] )
 		| Some(_)  -> raise Defined_before
 
 let addtoplevelfun id t symtbl=
@@ -330,7 +330,7 @@ and compile_exp x symtbl=
 					| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
 					| Some(LocalVar(StructType(id) as struct_t,_,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) -> (push_bigdata_local a ssize,struct_t) )
 					| Some(LocalVar(UnionType(id) as union_t,_,a)) -> (match List.assoc id symtbl.tags with UnionTag(ssize,_) -> (push_bigdata_local a ssize,union_t) )
-					| Some(LocalVar(t,_,a)) -> (retrieve_sprel (-a+1), t)
+					| Some(LocalVar(t,_,a)) -> (*fprintf stderr "found %s -> %d\n" id a);*)(retrieve_sprel (-a+1), t)
 					| Some(EnumerationConst(t,c)) -> ([PUSH(c)], t)
 					| None -> raise Undefined_variable)
 	| Call("geti",[]) -> ([PUSH(1);ININT;PUSH(1);RETRIEVE], IntType) (*Input系命令は、スタックに格納先のヒープのアドレスをおいておかないといけない*)
@@ -367,7 +367,13 @@ and compile_exp x symtbl=
 							| _ -> raise Undefined_function)
 	| Address(exp) -> compile_lvalue exp symtbl
 	| Indirection(exp) -> let (exp_a,Pointer(t))=compile_exp exp symtbl in (exp_a @ [RETRIEVE],t)
-	| CommaExpr(exp1,exp2) -> let (exp1_a,_)=compile_exp exp1 symtbl and (exp2_a,exp2_t)=compile_exp exp2 symtbl in (exp1_a @ exp2_a, exp2_t)
+	| CommaExpr(exp1,exp2) -> let (exp1_a,t1)=compile_exp exp1 symtbl and (exp2_a,exp2_t)=compile_exp exp2 symtbl in
+								let cleaning=match t1 with
+											| VoidType -> []
+											| StructType(_) -> []
+											| UnionType(_) -> []
+											| _ -> [DISCARD]
+								in (exp1_a @ cleaning @ exp2_a, exp2_t)
 	| IntConst(const) -> ([PUSH(const)], IntType)
 	| StringConst(const) -> let addr=get_staticvar ((String.length const)+1) in (Hashtbl.add symtbl.constants addr const);([PUSH(addr)], Pointer(IntType))
 	| ExprSizeof(exp) -> let (exp_a,t)=compile_exp exp symtbl in compile_exp (TypeSizeof(t)) symtbl
@@ -509,7 +515,8 @@ let rec compile_stat x symtbl returntype returnlabel breaklabel continuelabel (*
 				 					| (asm,st) -> (a_a @ asm, st)
 						 		) ([],localdef_st) stats)
 						 	in
-						 		(code,{finalst with env=(List.tl finalst.env)})
+						 		(*fprintf stderr "depth:%d\n" (List.length localdef_st.env));*)
+						 		(localdef_asm @ code,{finalst with env=List.tl (finalst.env)})
 	| ContinueStat -> (match continuelabel with None -> raise ContinueStat_not_within_loop | Some(lb) ->  ([JUMP(lb)],symtbl))
 	| BreakStat -> (match breaklabel with None -> raise BreakStat_not_within_loop | Some(lb) -> ([JUMP(lb)],symtbl) )
 	| PassStat -> ([],symtbl)
@@ -597,7 +604,7 @@ let rec compile_toplevel x symtbl=
 			and this_label= match (find_env id defined_st) with
 							| Some (ToplevelFunction(ty,lb)) -> lb
 			in
-				(defined_st, [LABEL(this_label)] @ prologue @ code @ epilogue)
+				({finalst with env=List.tl (finalst.env)}, [LABEL(this_label)] @ prologue @ code @ epilogue)
 	| StructDef(id,fields) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
 								else (let (s,f)=(make_fieldassoc definition symtbl) in ({symtbl with tags=(id,(StructTag(s,f)))::symtbl.tags},[]))
 	| UnionDef(id,fields) as definition -> if List.mem_assoc id symtbl.tags then raise Defined_before
