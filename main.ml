@@ -138,6 +138,7 @@ exception BreakStat_not_within_loop
 exception CaseLabel_not_within_switchstat
 exception DefaultLabel_not_within_switchstat
 exception Invalid_enumindex
+exception Invalid_arg
 exception Cast_error
 exception Lvalue_required
 
@@ -338,13 +339,26 @@ and compile_exp x symtbl=
 	| Call("puti",[arg1]) -> let (arg_a,IntType)=compile_exp arg1 symtbl in (arg_a @ [OUTINT],VoidType)
 	| Call("putp",[arg1]) -> let (arg_a,Pointer(t))=compile_exp arg1 symtbl in (arg_a @ [OUTINT],VoidType)
 	| Call("putc",[arg1]) -> let (arg_a,IntType)=compile_exp arg1 symtbl in (arg_a @ [OUTCHAR],VoidType)
-	| Call(id,args) ->  (match find_flame id (List.hd (List.rev symtbl.env)) with
-							| Some(ToplevelFunction(Func(rett,params),label)) -> let args=List.map (fun exp -> compile_exp exp symtbl) args in
-									let asts=List.map2 (
+	| Call(id,argexps) ->  (match find_flame id (List.hd (List.rev symtbl.env)) with
+							| Some(ToplevelFunction(Func(rett,params),label)) -> 
+									let replicate a len =
+										let rec rep_sub len lst= if len>0 then rep_sub (len-1) (a::lst) else lst in rep_sub len []
+									in
+									let args=List.map (fun exp -> compile_exp exp symtbl) argexps in
+									let params_mod= let arglen=List.length args and paramlen=List.length params in
+													if (List.hd (List.rev params))=VarArg then
+														if arglen<(paramlen-1) then raise Invalid_arg
+														else if arglen=paramlen-1 then List.rev (List.tl (List.rev params))
+														else params@(replicate VarArg (arglen-paramlen))
+													else 
+														if arglen<>paramlen then raise Invalid_arg else params
+									in
+									let asts= List.map2 (
 										fun arg par -> 
 											match (arg,par) with
+											| ((a,t),VarArg) -> (a,t,sizeof t 1 symtbl)
 											| ((a,t),ty) -> if t<>ty then raise (Type_error (t,ty)) else (a,t,sizeof t 1 symtbl)
-									) args params
+										) args params_mod
 									in
 									(*一旦オペランドスタックに引数をプッシュして、ヒープに移す*)
 									let rec argpush_asmgen args asm = match args with
@@ -362,7 +376,10 @@ and compile_exp x symtbl=
 										((argpush_asmgen (asts) [])
 										@ (sp_add (sizeof rett 1 symtbl)) @ (ssr_seq 1 total_argsize [])
 										@ [PUSH(2);RETRIEVE;PUSH(0);RETRIEVE;PUSH((sizeof rett 1 symtbl)-1);SUB;PUSH(2);SWAP;STORE](*retvaladdr(2番地)を退避/更新*)
-										@ [CALL(label)] @ (sp_add (-(sizeof rett 1 symtbl))) @ to_opstack
+										@ (sp_add total_argsize)
+										@ [CALL(label)]
+										@ (sp_add (-total_argsize))
+										@ (sp_add (-(sizeof rett 1 symtbl))) @ to_opstack
 										@ [PUSH(2);SWAP;STORE] (*復元*), rett)
 							| _ -> raise Undefined_function)
 	| Address(exp) -> compile_lvalue exp symtbl
@@ -594,13 +611,16 @@ let rec compile_toplevel x symtbl=
 																-> if List.mem StaticMod modifiers then addstaticvar id t (optlen len) acc_st init acc_asm
 																	else addlocalvar id t (optlen len) acc_st init acc_asm
 											) ({defined_st with env=[]::defined_st.env;localoffset=0},[]) vardecl) in			
-			let newfun_st=List.fold_left (fun acc param -> match param with Parameter(ty,id) -> let (e,a)=addlocalvar id ty 1 acc None [] in e) localdef_st params
+			let newfun_st=List.fold_left (fun acc param -> match param with 
+															| Parameter(VarArg,_) -> acc
+															| Parameter(ty,id) -> let (e,a)=addlocalvar id ty 1 acc None [] in e
+											) localdef_st params
 			and ret_label=get_label () in
 			let (code,finalst)=(List.fold_left (fun acc s -> match (acc,s) with ((a_a,a_s),stat) -> 
 				 		(match (compile_stat s  a_s t ret_label None None false) with
 				 		| (asm,st) -> (a_a @ asm, st)
 				 		)) ([],{newfun_st with labels=[]}) body) in
-			let prologue=(sp_add (finalst.localoffset)) @ localdef_asm and epilogue= [LABEL(ret_label)] @ (sp_add (-(finalst.localoffset))) @ [RETURN]
+			let prologue=(sp_add (localdef_st.localoffset(*引数の分は含まない*))) @ localdef_asm and epilogue= [LABEL(ret_label)] @ (sp_add (-(localdef_st.localoffset))) @ [RETURN]
 			and this_label= match (find_env id defined_st) with
 							| Some (ToplevelFunction(ty,lb)) -> lb
 			in

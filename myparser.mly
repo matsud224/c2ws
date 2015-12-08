@@ -225,6 +225,8 @@ parm_list_additional:
 	{ Parameter(ptr_wrap $2 $3,$4) :: $5 }
 |	COMMA simple_typename some_asterisk Id  LBRACKET RBRACKET parm_list_additional
 	{ Parameter(Pointer(ptr_wrap $2 $3),$4) :: $7 }
+|	COMMA THREEDOT
+	{ [Parameter(VarArg,"")] }
 
 func:
 	simple_typename some_asterisk Id LPAREN parm_list RPAREN LBRACE var_decl_list stmt_list RBRACE
@@ -407,8 +409,8 @@ unary_expr:
 	{ Not($2) }
 |	SIZEOF unary_expr
 	{ ExprSizeof($2) }
-|	SIZEOF simple_typename some_asterisk
-	{ TypeSizeof(ptr_wrap $2 $3) }
+|	SIZEOF LPAREN simple_typename some_asterisk RPAREN
+	{ TypeSizeof(ptr_wrap $3 $4) }
 |	INCREMENT unary_expr
 	{ Assign($2,Add($2,IntConst(1))) }
 |	DECREMENT unary_expr

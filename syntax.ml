@@ -9,6 +9,7 @@ type typename = IntType | VoidType | Array of typename | Pointer of typename
 				| StructType of identifier
 				| UnionType of identifier
 				| EnumType of identifier
+				| VarArg
 
 and parm= Parameter of typename * identifier
 and init_value = InitExp of exp | InitArray of init_value list
