@@ -328,7 +328,7 @@ and compile_exp x symtbl=
 					| Some(StaticVar(StructType(id) as struct_t,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) -> (push_bigdata_static a ssize, struct_t) )
 					| Some(StaticVar(UnionType(id) as union_t,a)) -> (match List.assoc id symtbl.tags with UnionTag(ssize,_) -> (push_bigdata_static a ssize, union_t) )
 					| Some(StaticVar(t,a)) -> ([PUSH(a); RETRIEVE], t)
-					| Some(LocalVar(Array(t),_,a)) -> ([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
+					| Some(LocalVar(Array(t),_,a)) -> (*fprintf stderr "%s: %d\n" id a);*)([PUSH(0);RETRIEVE;PUSH(-a+1);ADD], Pointer(t))
 					| Some(LocalVar(StructType(id) as struct_t,_,a)) -> (match List.assoc id symtbl.tags with StructTag(ssize,_) -> (push_bigdata_local a ssize,struct_t) )
 					| Some(LocalVar(UnionType(id) as union_t,_,a)) -> (match List.assoc id symtbl.tags with UnionTag(ssize,_) -> (push_bigdata_local a ssize,union_t) )
 					| Some(LocalVar(t,_,a)) -> (*fprintf stderr "found %s -> %d\n" id a);*)(retrieve_sprel (-a+1), t)
@@ -620,7 +620,8 @@ let rec compile_toplevel x symtbl=
 				 		(match (compile_stat s  a_s t ret_label None None false) with
 				 		| (asm,st) -> (a_a @ asm, st)
 				 		)) ([],{newfun_st with labels=[]}) body) in
-			let prologue=(sp_add (localdef_st.localoffset(*引数の分は含まない*))) @ localdef_asm and epilogue= [LABEL(ret_label)] @ (sp_add (-(localdef_st.localoffset))) @ [RETURN]
+			let stackextsize=finalst.localoffset-(newfun_st.localoffset-localdef_st.localoffset) (*引数の分は含まない*) in
+			let prologue=(sp_add stackextsize) @ localdef_asm and epilogue= [LABEL(ret_label)] @ (sp_add (-(stackextsize))) @ [RETURN]
 			and this_label= match (find_env id defined_st) with
 							| Some (ToplevelFunction(ty,lb)) -> lb
 			in
@@ -643,6 +644,10 @@ let rec compile ast symtbl asm=
 
 let ()=
 	let ast=Myparser.prog Mylexer.token (Lexing.from_channel stdin) in
-		try assemble stdout (compile ast {env=[[]]; tags=[]; labels=[]; constants=(Hashtbl.create 10); switchlabels=[];localoffset=0} [])
+		let is_printasm=ref false in
+		let spec=[("-S",Arg.Set is_printasm,"Output Whitespace assembler")] in
+		Arg.parse spec (fun s->()) "Usage: c2ws [-S]";
+		let do_func=if !is_printasm(*この!は否定ではない。refから取り出してる*) then print_asm else assemble in
+		try do_func stdout (compile ast {env=[[]]; tags=[]; labels=[]; constants=(Hashtbl.create 10); switchlabels=[];localoffset=0} [])
 		with Type_error(t1,t2) as e -> fprintf stderr "Type_error: expected %s but %s\n" (print_type t2) (print_type t1)
 
